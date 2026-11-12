@@ -1,0 +1,5 @@
+[[device]]
+model = "luxvisions-30c9-0052"
+[[device.fault]]
+on = { control = { request = 0x87, selector = 2, entity = 2 } }
+action = "stall"

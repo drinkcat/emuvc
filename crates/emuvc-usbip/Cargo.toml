@@ -1,0 +1,16 @@
+[package]
+name = "emuvc-usbip"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "USB/IP server exporting emuvc's emulated devices, plus client and vhci attach helpers"
+
+[dependencies]
+emuvc-usb.workspace = true
+log.workspace = true
+
+[dev-dependencies]
+emuvc-devices.workspace = true
+emuvc-uvc.workspace = true
+emuvc-video.workspace = true

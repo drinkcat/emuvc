@@ -1,0 +1,17 @@
+[package]
+name = "emuvc-devices"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Descriptor sets of real UVC devices, for emulation"
+
+[dependencies]
+emuvc-usb.workspace = true
+emuvc-uvc.workspace = true
+emuvc-video = { version = "0.1.0", path = "../emuvc-video" }
+serde = { workspace = true, features = ["derive"] }
+toml = "1.2.1"
+
+[dev-dependencies]
+emuvc-video = { path = "../emuvc-video" }

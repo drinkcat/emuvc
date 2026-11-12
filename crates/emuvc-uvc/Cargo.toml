@@ -1,0 +1,13 @@
+[package]
+name = "emuvc-uvc"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "UVC 1.5 constants, descriptor builders and topology parsing"
+
+[dependencies]
+emuvc-usb.workspace = true
+emuvc-video = { version = "0.1.0", path = "../emuvc-video" }
+log.workspace = true
+serde = { workspace = true, features = ["derive"] }
