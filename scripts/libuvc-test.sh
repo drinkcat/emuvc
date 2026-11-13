@@ -157,6 +157,10 @@ run_case iso-errors pass EMUVC_CONFIG="$CFG/iso-errors.toml" -- -f mjpeg -s 640x
 # stream, so frames arrive with gaps; only check that it streams.
 CHECK_RE='start streaming .* 192 bytes/payload' run_case zero-max-payload pass EMUVC_CONFIG="$CFG/zero-max-payload.toml" -- -f yuyv -s 640x480 -r 30 -n 10 -t 20 --allow-gaps
 run_case no-eof pass EMUVC_CONFIG="$CFG/no-eof.toml" -- -f yuyv -s 640x480 -r 30 -n 30 -t 15
+# Payload header timestamps (StreamQuirks::clock): the header shrinks mid-frame / the clock misbehaves.
+run_case pts-first-only pass EMUVC_CONFIG="$CFG/pts-first-only.toml" -- -f yuyv -s 640x480 -r 30 -n 30 -t 15
+run_case pts-first-only-mjpeg pass EMUVC_CONFIG="$CFG/pts-first-only.toml" -- -f mjpeg -s 1280x720 -r 30 -n 30 -t 15
+run_case clock-wrap-jitter pass EMUVC_CONFIG="$CFG/clock-wrap-jitter.toml" -- -f mjpeg -s 1280x720 -r 30 -n 60 -t 15
 # GET_DEF(brightness) stalls: libuvc must report PIPE for it (a failed check, so stream_test exits 1).
 EXPECT_RC=1 CHECK_RE='FAIL brightness GET_DEF = .*\(Pipe\)' run_case stall-get-def pass EMUVC_CONFIG="$CFG/stall-get-def.toml" -- --controls
 
@@ -172,7 +176,7 @@ CHECK_RE='^RESULT mode=poll ' run_api api-poll-no-eof EMUVC_CONFIG="$CFG/no-eof.
 CHECK_RE='^RESULT mode=convert ' run_api api-convert-no-dht EMUVC_CONFIG="$CFG/no-dht.toml" -- convert
 
 # Quirky-but-working devices: the API must behave as on the default device (strict).
-for c in header-6 header-long idle-zlp probe-len-26 probe-no-frame-size startup-delay no-fid-toggle; do
+for c in header-6 header-long idle-zlp probe-len-26 probe-no-frame-size startup-delay no-fid-toggle pts-first-only clock-wrap-jitter; do
   CHECK_RE='^RESULT mode=poll ' run_api "api-poll-$c" EMUVC_CONFIG="$CFG/$c.toml" -- poll negotiate
 done
 # Misbehaving devices: -l counts failed expectations as soft; crashes and hangs still fail.

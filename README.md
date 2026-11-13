@@ -56,7 +56,7 @@ clock = "realtime"
 [[device]]
 model = "luxvisions-30c9-0052"
 strip_dht = true                         # MJPEG without Huffman tables
-uvc = { no_eof = true }                  # UVC quirks: see StreamQuirks
+uvc = { no_eof = true }                  # UVC quirks: see StreamQuirks (clock: PTS/SCR, ClockQuirks)
 
 [[device.fault]]                         # generic USB faults: see emuvc_usb::fault
 on = { iso_in = { ep = 0x81 } }

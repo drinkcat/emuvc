@@ -37,6 +37,11 @@ Runs libuvc (built out of tree, never modified) against the emuvc libusb shim
   `desc-*.toml` patch the synthetic camera's descriptors (`[[device.patch]]`) with a few structural
   errors a fuzzer rarely produces (unknown subtype, reordering, wrong counts, a duplicate frame);
   the device keeps working from its original descriptors.
+  `pts-first-only.toml` and `clock-wrap-jitter.toml` exercise payload header timestamps
+  (`uvc.clock`). The first shortens the header after a frame's first payload. The second makes the
+  PTS/SCR clock wrap, drift, jitter and step back. libuvc parses PTS/SCR without using them, and
+  uvcvideo's hardware timestamps can't be checked over USB/IP: with `hwtimestamps=1`, even a
+  well-behaved clock yields backwards buffer timestamps there.
 
 ## API coverage (`api_test.c`) and `scripts/libuvc-coverage.sh`
 
