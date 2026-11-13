@@ -179,7 +179,11 @@ static void mode_info(void) {
   if (ds) uvc_free_device_list(ds, 1);
   /* list freed without unref, then manual unref */
   expect(uvc_get_device_list(ctx, &list) == UVC_SUCCESS, "list again");
-  if (list && list[0]) { uvc_device_t *keep = list[0]; uvc_free_device_list(list, 0); uvc_unref_device(keep); }
+  if (list && list[0]) {
+    uvc_device_t *keep = list[0];
+    for (int i = 1; list[i]; i++) uvc_unref_device(list[i]);
+    uvc_free_device_list(list, 0); uvc_unref_device(keep);
+  }
   else if (list) uvc_free_device_list(list, 1);
 
   /* every error code */
@@ -214,7 +218,9 @@ static void mode_info(void) {
   if (!devh) return;
   uvc_device_handle_t *dup = NULL;
   expect(uvc_open(dev, &dup) == UVC_ERROR_BUSY, "double open is BUSY");
-  expect(uvc_get_device(devh) == dev, "uvc_get_device");
+  uvc_device_t *got = uvc_get_device(devh); /* takes a reference */
+  expect(got == dev, "uvc_get_device");
+  uvc_unref_device(got);
   expect(uvc_get_libusb_handle(devh) != NULL, "libusb handle");
   printf("  spec version %04x\n", uvc_get_spec_version(devh));
   expect(uvc_get_spec_version(devh) >= 0x0100, "spec version plausible");
@@ -900,7 +906,9 @@ static void mode_wrap(void) {
   printf("  uvc_wrap: %s\n", uvc_strerror(e));
   if (e == UVC_SUCCESS && wh) {
     devh = wh;
-    expect(uvc_get_device(wh) != NULL, "wrapped device has a uvc_device");
+    uvc_device_t *wd = uvc_get_device(wh); /* takes a reference */
+    expect(wd != NULL, "wrapped device has a uvc_device");
+    if (wd) uvc_unref_device(wd);
     expect(uvc_get_libusb_handle(wh) != NULL, "wrapped device has a libusb handle");
     char *buf = NULL; size_t blen = 0; FILE *fp = open_memstream(&buf, &blen);
     uvc_print_diag(wh, fp); fclose(fp); expect(blen > 0, "print_diag on wrapped device"); free(buf);

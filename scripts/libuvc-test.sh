@@ -4,12 +4,15 @@
 #   Tests upstream libuvc master, fetched into target/libuvc-src on every run.
 #   LIBUVC_REPO / LIBUVC_REF select another repository or branch, tag or ref
 #   (e.g. LIBUVC_REF=pull/336/head); LIBUVC_SRC=DIR tests a local checkout as is.
-#   LIBUVC_TEST_MARKDOWN=FILE appends a Markdown report (e.g. $GITHUB_STEP_SUMMARY).
+#   LIBUVC_TEST_MARKDOWN=FILE appends a Markdown report (e.g. $GITHUB_STEP_SUMMARY), titled
+#   with LIBUVC_TEST_NAME if set.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # LIBUVC_BUILD / LIBUVC_CMAKE_FLAGS select another libuvc build (e.g. with
-# coverage instrumentation, see scripts/libuvc-coverage.sh).
+# coverage instrumentation, see scripts/libuvc-coverage.sh). LIBUVC_TEST_CFLAGS are
+# extra flags for the test programs, LIBUVC_PRELOAD libraries to load before the shim
+# (both used by scripts/libuvc-asan.sh).
 BUILD="${LIBUVC_BUILD:-$ROOT/target/libuvc-build}"
 OUT="$BUILD/tests"
 SHIM="$ROOT/target/debug/libemuvc_libusb.so"
@@ -66,13 +69,13 @@ cmake -S "$LIBUVC_SRC" -B "$BUILD" -DCMAKE_BUILD_TYPE=Debug ${LIBUVC_CMAKE_FLAGS
 cmake --build "$BUILD" -j"$(nproc)" >>"$ROOT/target/libuvc-build.log" 2>&1 \
   || { tail -20 "$ROOT/target/libuvc-build.log"; exit 2; }
 mkdir -p "$OUT"
-# shellcheck disable=SC2046
-cc -g -O1 -Wall -Wextra -o "$OUT/stream_test" "$ROOT/tests/libuvc/stream_test.c" \
+# shellcheck disable=SC2046,SC2086
+cc -g -O1 -Wall -Wextra ${LIBUVC_TEST_CFLAGS:-} -o "$OUT/stream_test" "$ROOT/tests/libuvc/stream_test.c" \
   -I"$LIBUVC_SRC/include" -I"$BUILD/include" -L"$BUILD" -luvc -Wl,-rpath,"$BUILD" \
   $(pkg-config --cflags --libs libjpeg libusb-1.0) -lpthread
 # api_test uses libuvc internals (libuvc_internal.h) and libusb directly
-# shellcheck disable=SC2046
-cc -g -O1 -Wall -Wextra -o "$OUT/api_test" "$ROOT/tests/libuvc/api_test.c" \
+# shellcheck disable=SC2046,SC2086
+cc -g -O1 -Wall -Wextra ${LIBUVC_TEST_CFLAGS:-} -o "$OUT/api_test" "$ROOT/tests/libuvc/api_test.c" \
   -I"$LIBUVC_SRC/include" -I"$BUILD/include" -L"$BUILD" -luvc -Wl,-rpath,"$BUILD" \
   $(pkg-config --cflags --libs libjpeg libusb-1.0) -lpthread
 
@@ -94,7 +97,8 @@ run_case() {
   local t0=$SECONDS rc=0
   # Emulator-side frame stats ("stop streaming ... frames_dropped") help tell
   # device drops from host drops when a case fails.
-  env LD_PRELOAD="$SHIM" EMUVC_LOG="${EMUVC_LOG:-emuvc_uvc::stream=info}" "${envs[@]}" timeout 60 "$OUT/${TEST_BIN:-stream_test}" "$@" >"$TMP" 2>&1 || rc=$?
+  # timeout stays outside LD_PRELOAD: only the test process gets the shim (and libasan).
+  timeout 60 env LD_PRELOAD="${LIBUVC_PRELOAD:+$LIBUVC_PRELOAD:}$SHIM" EMUVC_LOG="${EMUVC_LOG:-emuvc_uvc::stream=info}" "${envs[@]}" "$OUT/${TEST_BIN:-stream_test}" "$@" >"$TMP" 2>&1 || rc=$?
   local secs=$((SECONDS - t0)) ok=1
   [ $rc -eq "${EXPECT_RC:-0}" ] || ok=0
   if [ -n "${CHECK_RE:-}" ] && ! grep -Eq "$CHECK_RE" "$TMP"; then ok=0; echo "(missing output /$CHECK_RE/)" >>"$TMP"; fi
@@ -178,16 +182,18 @@ for f in get_config_descriptor=io get_active_config_descriptor=io open=access \
          get_string_descriptor_ascii=io init_context=no_mem set_configuration=io wrap_sys_device=io; do
   CHECK_RE='^RESULT mode=' run_api "api-shimfail-${f//[^a-z_0-9=-]/_}" $D $V "EMUVC_LIBUSB_FAIL=$f" -- -l all
 done
-# finding: uvc_print_diag ignores a uvc_get_device_descriptor failure and prints an uninitialised pointer
+# finding: uvc_print_diag ignores a uvc_get_device_descriptor failure and prints an uninitialised pointer;
+# uvc_get_device_list leaks the config descriptor of a device whose descriptor it cannot read (ASan).
 run_api_each api-shimfail-get_device_descriptor=io $D $V EMUVC_LIBUSB_FAIL=get_device_descriptor=io
 
 echo "summary: $PASS passed, $FAIL failed, $INFO informational"
 
 # ---- Markdown report ----
-# Exit status: 1 failed check, 2 setup error, 3 api_test watchdog (hang), 124 timeout, 128+N signal N.
+# Exit status: 1 failed check, 2 setup error, 3 api_test watchdog (hang), 86 sanitizer error
+# (scripts/libuvc-asan.sh), 124 timeout, 128+N signal N.
 status() {
   case $1 in
-    3) echo "3 (hang, watchdog)" ;; 124) echo "124 (timeout)" ;; 134) echo "134 (SIGABRT)" ;;
+    3) echo "3 (hang, watchdog)" ;; 86) echo "86 (sanitizer)" ;; 124) echo "124 (timeout)" ;; 134) echo "134 (SIGABRT)" ;;
     136) echo "136 (SIGFPE)" ;; 139) echo "139 (SIGSEGV)" ;; *) echo "$1" ;;
   esac
 }
@@ -197,7 +203,7 @@ table() { # "name rc"...
 }
 if [ -n "${LIBUVC_TEST_MARKDOWN:-}" ]; then
   {
-    echo "### libuvc suite: $PASS passed, $FAIL failed, $INFO informational"
+    echo "### libuvc suite${LIBUVC_TEST_NAME:+ ($LIBUVC_TEST_NAME)}: $PASS passed, $FAIL failed, $INFO informational"
     echo
     echo "libuvc: $LIBUVC_DESC at \`$LIBUVC_COMMIT\`"
     echo

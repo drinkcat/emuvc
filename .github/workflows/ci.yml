@@ -69,6 +69,20 @@ jobs:
       - if: always()
         run: rm -rf target/libuvc-* target/vm
 
+  libuvc-asan:
+    name: libuvc suite, ASan+UBSan
+    runs-on: ubuntu-26.04
+    steps:
+      - uses: actions/checkout@v7
+      - run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends cmake pkg-config libjpeg-dev libusb-1.0-0-dev
+      - run: rustup toolchain install # the version in rust-toolchain.toml
+      - uses: Swatinem/rust-cache@v2
+      - run: LIBUVC_TEST_MARKDOWN="$GITHUB_STEP_SUMMARY" scripts/libuvc-asan.sh
+      - if: always()
+        run: rm -rf target/libuvc-* target/vm # see the libuvc job
+
   vm:
     name: USB/IP against the Linux kernel (QEMU)
     runs-on: ubuntu-26.04
