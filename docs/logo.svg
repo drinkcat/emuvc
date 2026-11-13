@@ -1,0 +1,110 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <defs>
+    <radialGradient id="bg" cx="50%" cy="40%" r="65%">
+      <stop offset="0" stop-color="#FFF4D6"/>
+      <stop offset="1" stop-color="#FFD98A"/>
+    </radialGradient>
+    <radialGradient id="glass" cx="38%" cy="35%" r="70%">
+      <stop offset="0" stop-color="#7FD3FF"/>
+      <stop offset="0.45" stop-color="#2A6FB0"/>
+      <stop offset="1" stop-color="#0E1E35"/>
+    </radialGradient>
+    <linearGradient id="body" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#9A6B43"/>
+      <stop offset="1" stop-color="#6B4428"/>
+    </linearGradient>
+    <linearGradient id="neck" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#8FA9CC"/>
+      <stop offset="1" stop-color="#6C86AD"/>
+    </linearGradient>
+  </defs>
+
+  <!-- background -->
+  <circle cx="256" cy="256" r="244" fill="url(#bg)" stroke="#3B2A1E" stroke-width="10"/>
+  <ellipse cx="256" cy="472" rx="130" ry="14" fill="#E3B65E" opacity="0.7"/>
+
+  <!-- legs -->
+  <g stroke="#3B2A1E" stroke-width="10" stroke-linecap="round" stroke-linejoin="round" fill="none">
+    <path d="M222 420 L214 466"/>
+    <path d="M214 466 L192 474 M214 466 L212 478 M214 466 L232 474"/>
+    <path d="M286 420 L296 466"/>
+    <path d="M296 466 L276 474 M296 466 L298 478 M296 466 L318 474"/>
+  </g>
+  <g stroke="#C9A47A" stroke-width="5" stroke-linecap="round" fill="none">
+    <path d="M222 420 L214 466"/>
+    <path d="M286 420 L296 466"/>
+  </g>
+
+  <!-- shaggy body -->
+  <path d="M140 350
+           C140 290 200 262 260 262
+           C330 262 378 300 378 352
+           C378 372 372 392 362 404
+           L352 426 L338 410 L326 436 L312 414 L298 440 L284 416 L270 442 L256 418
+           L242 442 L228 416 L214 440 L202 412 L188 434 L178 406 L162 424 L158 398
+           C146 386 140 370 140 350 Z"
+        fill="url(#body)" stroke="#3B2A1E" stroke-width="9" stroke-linejoin="round"/>
+  <!-- feather strokes -->
+  <g stroke="#4E311C" stroke-width="4" stroke-linecap="round" fill="none" opacity="0.6">
+    <path d="M180 330 q8 20 2 40"/>
+    <path d="M210 310 q10 24 4 52"/>
+    <path d="M245 300 q10 30 2 62"/>
+    <path d="M200 380 q6 14 0 26"/>
+    <path d="M235 384 q6 16 0 30"/>
+  </g>
+
+  <!-- neck -->
+  <path d="M232 280 C214 240 196 210 196 168 L238 160 C238 200 256 236 276 270 Z"
+        fill="url(#neck)" stroke="#3B2A1E" stroke-width="9" stroke-linejoin="round"/>
+  <g stroke="#56709A" stroke-width="3.5" stroke-linecap="round" fill="none" opacity="0.7">
+    <path d="M212 200 q6 4 12 0"/>
+    <path d="M220 228 q6 4 12 0"/>
+    <path d="M234 254 q6 4 12 0"/>
+  </g>
+
+  <!-- head -->
+  <path d="M168 128 C168 92 196 70 226 72 C258 74 274 100 270 128 C266 160 240 176 214 174 C186 172 168 154 168 128 Z"
+        fill="#5B3D27" stroke="#3B2A1E" stroke-width="9"/>
+  <!-- hair tuft -->
+  <path d="M206 76 C200 58 210 48 218 56 C220 44 234 44 234 58 C242 50 254 56 246 72"
+        fill="#5B3D27" stroke="#3B2A1E" stroke-width="7" stroke-linejoin="round" stroke-linecap="round"/>
+  <!-- blue face patch -->
+  <ellipse cx="236" cy="128" rx="30" ry="34" fill="#8FB4E0"/>
+  <!-- beak -->
+  <path d="M258 132 C280 126 302 130 312 140 C302 150 280 154 258 150 Z"
+        fill="#F2A33A" stroke="#3B2A1E" stroke-width="7" stroke-linejoin="round"/>
+  <path d="M262 141 L300 141" stroke="#3B2A1E" stroke-width="4" stroke-linecap="round"/>
+  <!-- eye -->
+  <circle cx="238" cy="118" r="20" fill="#FFFFFF" stroke="#3B2A1E" stroke-width="6"/>
+  <circle cx="246" cy="120" r="10" fill="#1A1410"/>
+  <circle cx="250" cy="115" r="3.6" fill="#FFFFFF"/>
+  <path d="M220 94 Q238 86 256 96" stroke="#3B2A1E" stroke-width="6" stroke-linecap="round" fill="none"/>
+  <!-- cheek -->
+  <ellipse cx="222" cy="146" rx="9" ry="5" fill="#F28C8C" opacity="0.7"/>
+
+  <!-- camera -->
+  <g>
+    <!-- viewfinder bump -->
+    <rect x="312" y="230" width="46" height="26" rx="7" fill="#3A4757" stroke="#1C232C" stroke-width="8"/>
+    <!-- body -->
+    <rect x="286" y="248" width="150" height="104" rx="20" fill="#3E4C5E" stroke="#1C232C" stroke-width="9"/>
+    <rect x="296" y="258" width="130" height="18" rx="8" fill="#55667B"/>
+    <!-- REC light -->
+    <circle cx="414" cy="270" r="8" fill="#FF3B3B" stroke="#1C232C" stroke-width="4"/>
+    <circle cx="411.5" cy="267.5" r="2.5" fill="#FFB3B3"/>
+    <!-- lens -->
+    <circle cx="364" cy="306" r="42" fill="#2A3442" stroke="#1C232C" stroke-width="8"/>
+    <circle cx="364" cy="306" r="30" fill="url(#glass)" stroke="#11171F" stroke-width="4"/>
+    <circle cx="364" cy="306" r="12" fill="#0B1424"/>
+    <ellipse cx="352" cy="292" rx="9" ry="6" fill="#FFFFFF" opacity="0.85" transform="rotate(-30 352 292)"/>
+    <circle cx="376" cy="318" r="3" fill="#FFFFFF" opacity="0.6"/>
+  </g>
+
+  <!-- little wing gripping the camera -->
+  <path d="M262 304 C278 286 304 284 314 298 C322 310 314 326 300 330 C290 334 280 330 274 324 Z"
+        fill="#7A5233" stroke="#3B2A1E" stroke-width="8" stroke-linejoin="round"/>
+  <g stroke="#3B2A1E" stroke-width="4" stroke-linecap="round" fill="none">
+    <path d="M300 300 q8 4 10 12"/>
+    <path d="M292 312 q8 4 10 12"/>
+  </g>
+</svg>
