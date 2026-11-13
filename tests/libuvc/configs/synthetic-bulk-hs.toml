@@ -1,0 +1,4 @@
+# High speed bulk streaming, still method 3 (dedicated bulk still endpoint).
+[[device]]
+model = "synthetic"
+synthetic = { transfer = "bulk", still = 3 }

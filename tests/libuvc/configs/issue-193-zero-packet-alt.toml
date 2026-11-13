@@ -1,0 +1,4 @@
+# libuvc #193: isochronous alt setting with wMaxPacketSize 0.
+[[device]]
+model = "synthetic"
+synthetic = { zero_packet_alt = true }

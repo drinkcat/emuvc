@@ -1,0 +1,3 @@
+# Synthetic UVC 1.5 camera, high speed iso: every control, selector + extension units, still method 2, trigger.
+[[device]]
+model = "synthetic"

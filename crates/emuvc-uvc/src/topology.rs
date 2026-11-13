@@ -149,6 +149,18 @@ pub struct Format {
     pub frames: Vec<Frame>,
     /// `(primaries, transfer characteristics, matrix coefficients)`.
     pub color: Option<(u8, u8, u8)>,
+    /// Still image frame descriptor (still capture methods 2 and 3).
+    pub still: Option<StillFrame>,
+}
+
+/// VS still image frame descriptor.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StillFrame {
+    /// Bulk endpoint for method 3, 0 for method 2.
+    pub endpoint: u8,
+    /// Image sizes; bFrameIndex of a still probe is 1-based into this list.
+    pub sizes: Vec<(u16, u16)>,
+    pub compression: Vec<u8>,
 }
 
 impl Format {
@@ -524,7 +536,12 @@ fn parse_vs(itf: &InterfaceView, speed: Speed) -> Result<VideoStreaming, Topolog
         .ok_or(TopologyError::NotUvc(n))?;
     let mut hdr = None;
     let mut formats: Vec<Format> = Vec::new();
-    for (sub, d) in cs_descriptors(&alt0.extra) {
+    // Some cameras (ELP) put the class-specific descriptors after the endpoint.
+    let mut cs = alt0.extra.clone();
+    alt0.endpoints
+        .iter()
+        .for_each(|e| cs.extend_from_slice(&e.extra));
+    for (sub, d) in cs_descriptors(&cs) {
         match sub {
             VS_INPUT_HEADER => {
                 need(d, 13, n, "VS input header shorter than 13 bytes")?;
@@ -572,6 +589,7 @@ fn parse_vs(itf: &InterfaceView, speed: Speed) -> Result<VideoStreaming, Topolog
                     default_frame: d[def_off],
                     frames: vec![],
                     color: None,
+                    still: None,
                 });
             }
             VS_FORMAT_MPEG2TS
@@ -588,12 +606,40 @@ fn parse_vs(itf: &InterfaceView, speed: Speed) -> Result<VideoStreaming, Topolog
                     default_frame: 0,
                     frames: vec![],
                     color: None,
+                    still: None,
                 });
             }
             VS_FRAME_UNCOMPRESSED | VS_FRAME_MJPEG | VS_FRAME_FRAME_BASED => {
                 let frame = parse_frame(d, n)?;
                 if let Some(f) = formats.last_mut() {
                     f.frames.push(frame);
+                }
+            }
+            VS_STILL_IMAGE_FRAME => {
+                need(d, 5, n, "still image frame descriptor shorter than 5 bytes")?;
+                let ns = d[4] as usize;
+                need(
+                    d,
+                    5 + 4 * ns + 1,
+                    n,
+                    "still image frame descriptor truncated",
+                )?;
+                let sizes = (0..ns)
+                    .map(|i| {
+                        (
+                            u16::from_le_bytes([d[5 + 4 * i], d[6 + 4 * i]]),
+                            u16::from_le_bytes([d[7 + 4 * i], d[8 + 4 * i]]),
+                        )
+                    })
+                    .collect();
+                let nc = d[5 + 4 * ns] as usize;
+                let compression = d.get(6 + 4 * ns..6 + 4 * ns + nc).unwrap_or(&[]).to_vec();
+                if let Some(f) = formats.last_mut() {
+                    f.still = Some(StillFrame {
+                        endpoint: d[3],
+                        sizes,
+                        compression,
+                    });
                 }
             }
             VS_COLORFORMAT => {

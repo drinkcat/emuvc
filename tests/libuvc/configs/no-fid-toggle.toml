@@ -1,0 +1,3 @@
+[[device]]
+model = "luxvisions-30c9-0052"
+uvc = { no_fid_toggle = true }

@@ -74,10 +74,16 @@ period), which keeps runs reproducible as long as the host keeps URBs queued.
   per iso interval or bulk transfer. A stream that isn't read fast enough
   skips stale frames. Alt-setting choice follows from dwMaxPayloadTransferSize
   (smallest alt carrying the bandwidth), as hosts expect.
+- Still images: methods 2 (in the video stream, STI bit) and 3 (dedicated
+  bulk endpoint), with still probe/commit and the trigger control.
+- Device-initiated events (`[[device.event]]`): button presses, control
+  changes, arbitrary (malformed) status packets, at times or periodically.
 - Frames come from `FrameSource` (`emuvc-video`), rendered one frame ahead on
   a worker thread (`Threaded`, like a camera's ISP pipeline) so rendering
-  never stalls the bus: test patterns in YUYV, NV12,
-  GREY, MJPEG (optionally without DHT), each carrying a **stamp** (frame
+  never stalls the bus: test patterns in every format libuvc knows (YUYV,
+  UYVY, NV12/21, I420, P010, GREY 8/16, RGB/BGR, 8-bit Bayer), MJPEG
+  (optionally without DHT) and H.264 (a fake bitstream: hosts don't decode
+  it), each carrying a **stamp** (frame
   counter + CRC-8 in a band at the top, documented in `stamp.rs`) so tests
   detect dropped, reordered or corrupted frames end to end, even through
   libuvc and JPEG.
@@ -94,8 +100,22 @@ Two layers, both configurable from TOML:
   dwMaxPayloadTransferSize, short probe structures, ignoring the requested
   format, startup delay, ZLPs vs header-only idle payloads.
 
+- **Transport** (libusb shim only): `EMUVC_LIBUSB_FAIL="open=access,submit_transfer=no_mem@5"`
+  makes chosen libusb calls fail, for host error paths no device can reach.
+
 Rule of thumb: if it can be described on the wire, it's a generic rule; if it
 needs to know what a frame or a probe structure is, it's a quirk.
+
+## Device models
+- Real devices, byte for byte (`luxvisions_30c9_0052.rs`).
+- Any device from a descriptor dump (`generic:` binary dump, `lsusb:` the
+  text of `lsusb -v`, as found in bug reports; `lsusb.rs` rebuilds the exact
+  bytes, including broken descriptors). Default control values.
+- `synthetic`: a generator covering most of the spec — UVC 1.0/1.1/1.5,
+  full/high/SuperSpeed, iso or bulk, every control and unit, all formats,
+  discrete or continuous intervals, several streaming interfaces, still
+  methods 1-3 — plus known-bad variants from libuvc's bug tracker
+  (`tests/libuvc/configs/issue-*.toml`).
 
 ## Transports
 
@@ -135,8 +155,9 @@ in a throwaway VM: kernel enumeration through vhci-hcd, uvcvideo streaming
 1. Capture: `/sys/bus/usb/devices/<dev>/descriptors` (+ `bos_descriptors`),
    control ranges (`v4l2-ctl -L`), extension unit sizes
    (`tools/uvc-xu-info.py`). Never needs streaming from the real camera.
-2. Quick start: `EMUVC_DEVICE=generic:/path/to/descriptors` already emulates
-   it with default control values.
+2. Quick start: `EMUVC_DEVICE=generic:/path/to/descriptors` or
+   `EMUVC_DEVICE=lsusb:/path/to/lsusb-v.txt` already emulates it with default
+   control values (`emuvc import-lsusb FILE --raw OUT` converts the text).
 3. Proper model: a module in `emuvc-devices` building the descriptors with the
    builders (byte-compare against the dump in a test), tuning controls, and an
    entry in `MODELS`. See `luxvisions_30c9_0052.rs`.
@@ -149,12 +170,13 @@ in a throwaway VM: kernel enumeration through vhci-hcd, uvcvideo streaming
   `tests/libuvc/stream_test.c` under the shim: formats, frame integrity,
   controls, multiple devices, fault scenarios.
 - `scripts/vm-usbip-test.sh`: USB/IP against the real kernel, in a VM.
+- `scripts/libuvc-coverage.sh`: the libuvc suite against a gcov-instrumented
+  libuvc, with per-file/function coverage (`scripts/gcov-summary.py`).
 - `emuvc selftest`; `emuvc check-frames` (raw captures, e.g. from
   `v4l2-ctl --stream-to`); `emuvc run -- lsusb -v` (diff against the real device).
 
 ## Future work
-- More models; import from `lsusb -v` text (bug reports rarely have binary dumps).
-- Scenario scripting (timed control changes, button presses, re-enumeration).
+- More real models (from bug reports via the lsusb importer).
+- Richer scenarios (re-enumeration, timed fault phases).
 - usbmon-format pcap of engine traffic (Wireshark dissects UVC).
-- Still image methods 2/3, frame-based/H.264 payloads, UVC 1.5 metadata.
-- SuperSpeed devices (bulk bursts, companion descriptors are already parsed).
+- Real encoders for frame-based formats; UVC 1.5 H.264/VP8 format descriptors.

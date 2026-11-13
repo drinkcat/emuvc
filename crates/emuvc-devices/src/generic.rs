@@ -43,18 +43,35 @@ pub fn build(cfg: &DeviceConfig) -> Result<CompositeDevice, String> {
 
 pub fn from_dump(bytes: &[u8], cfg: &DeviceConfig) -> Result<CompositeDevice, String> {
     let (device, configs) = split_dump(bytes)?;
-    let dd = DeviceDescriptor::parse(&device).unwrap();
-    let speed = cfg.speed.unwrap_or(match dd.bcd_usb {
+    from_descriptors(
+        Descriptors {
+            device,
+            configs,
+            langids: vec![0x0409],
+            ..Default::default()
+        },
+        None,
+        cfg,
+    )
+}
+
+/// Emulates a device from parsed descriptors; `speed` (when known) is used
+/// unless `cfg.speed` overrides it, else bcdUSB decides. Strings already in
+/// `desc` are kept, missing ones get placeholders.
+pub fn from_descriptors(
+    mut desc: Descriptors,
+    speed: Option<Speed>,
+    cfg: &DeviceConfig,
+) -> Result<CompositeDevice, String> {
+    let dd = DeviceDescriptor::parse(&desc.device).ok_or("no device descriptor")?;
+    if desc.configs.is_empty() {
+        return Err("no configuration descriptor".into());
+    }
+    let speed = cfg.speed.or(speed).unwrap_or(match dd.bcd_usb {
         0x0300.. => Speed::Super,
         0x0200.. => Speed::High,
         _ => Speed::Full,
     });
-    let mut desc = Descriptors {
-        device,
-        configs,
-        langids: vec![0x0409],
-        ..Default::default()
-    };
     // Placeholder strings so hosts reading them get something sensible.
     let name = format!("{:04x}:{:04x}", dd.vendor_id, dd.product_id);
     for (i, s) in [
@@ -63,15 +80,18 @@ pub fn from_dump(bytes: &[u8], cfg: &DeviceConfig) -> Result<CompositeDevice, St
         (dd.i_serial, "0001"),
     ] {
         if i != 0 {
-            desc.strings.insert(i, s.to_string());
+            desc.strings.entry(i).or_insert_with(|| s.to_string());
         }
     }
     cfg.apply_strings(&mut desc);
     let view = ConfigView::parse(&desc.configs[0]).map_err(|e| e.to_string())?;
     let mut dev = CompositeDevice::new(format!("generic-{name}"), speed, desc);
-    for vc in find_video_control_interfaces(&view) {
+    for (i, vc) in find_video_control_interfaces(&view).into_iter().enumerate() {
         let f = parse_function(&view, vc, speed).map_err(|e| format!("VC interface {vc}: {e}"))?;
-        let uvc = UvcFunction::new(f, speed, cfg.uvc.clone(), &mut |_| cfg.frame_source());
+        let mut uvc = UvcFunction::new(f, speed, cfg.uvc.clone(), &mut |_| cfg.frame_source());
+        if i == 0 {
+            uvc.set_events(cfg.events.clone());
+        }
         dev.add_function(&uvc.interfaces(), Box::new(uvc));
     }
     Ok(dev)

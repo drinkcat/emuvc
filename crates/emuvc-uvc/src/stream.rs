@@ -134,14 +134,56 @@ pub enum IdlePayload {
     Zlp,
 }
 
+/// Field overrides applied to a probe/commit structure as the device
+/// reports it for one request type (unset fields keep the negotiated value).
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct ProbeOverride {
+    pub hint: Option<u16>,
+    pub format_index: Option<u8>,
+    pub frame_index: Option<u8>,
+    pub frame_interval: Option<u32>,
+    pub comp_quality: Option<u16>,
+    pub delay: Option<u16>,
+    pub max_video_frame_size: Option<u32>,
+    pub max_payload_transfer_size: Option<u32>,
+    pub clock_frequency: Option<u32>,
+    pub framing_info: Option<u8>,
+    /// Reply with exactly these bytes instead.
+    pub raw: Option<Vec<u8>>,
+}
+
+impl ProbeOverride {
+    fn apply(&self, c: &mut StreamingControl) {
+        macro_rules! set {
+            ($($f:ident),*) => { $( if let Some(v) = self.$f { c.$f = v; } )* };
+        }
+        set!(
+            hint,
+            format_index,
+            frame_index,
+            frame_interval,
+            comp_quality,
+            delay,
+            max_video_frame_size,
+            max_payload_transfer_size,
+            clock_frequency,
+            framing_info
+        );
+    }
+}
+
 /// Class-level misbehaviour knobs for a streaming interface. All default to
 /// a well-behaved device.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct StreamQuirks {
     pub idle: IdlePayload,
-    /// Payload header length: 2 (no PTS/SCR), 6 (PTS) or 12 (PTS+SCR, default).
+    /// Payload header length (default 12 = PTS + SCR; 2 = none, 6 = PTS).
+    /// Longer headers carry metadata bytes after the SCR.
     pub header_len: Option<u8>,
+    /// Set the PTS and SCR flags whatever the header length (bogus headers).
+    pub lie_pts_scr: bool,
     /// Never set EOF (hosts must rely on the FID toggle).
     pub no_eof: bool,
     /// Never toggle FID.
@@ -152,12 +194,23 @@ pub struct StreamQuirks {
     pub drop_every: Option<u32>,
     /// Send only the first half of every Nth frame (then EOF).
     pub truncate_every: Option<u32>,
-    /// Report this dwMaxPayloadTransferSize in probe/commit (e.g. 0).
+    /// Restrict err/drop/truncate_every to the first N frames of each stream
+    /// (e.g. cameras sending garbage while the sensor starts).
+    pub only_first_frames: Option<u64>,
+    /// Report this dwMaxPayloadTransferSize in every probe/commit reply (e.g. 0).
     pub max_payload_transfer_size: Option<u32>,
+    /// Per-request overrides of the probe/commit replies.
+    pub probe_cur: Option<ProbeOverride>,
+    pub probe_min: Option<ProbeOverride>,
+    pub probe_max: Option<ProbeOverride>,
+    pub probe_def: Option<ProbeOverride>,
+    pub commit_cur: Option<ProbeOverride>,
     /// Bulk: device payload size (default: dwMaxPayloadTransferSize).
     pub bulk_payload_size: Option<u32>,
     /// Probe/commit length regardless of bcdUVC (e.g. 26 or 34 on a 1.5 device).
     pub probe_len: Option<u16>,
+    /// STALL probe/commit requests whose wLength isn't the probe length.
+    pub strict_probe_len: bool,
     /// Negotiate the default format/frame whatever the host asks for.
     pub ignore_probe_format: bool,
     /// Delay before the first frame after streaming starts.
@@ -168,7 +221,41 @@ pub struct StreamQuirks {
 pub struct StreamStats {
     pub frames_sent: u64,
     pub frames_dropped: u64,
+    pub stills_sent: u64,
     pub payloads: u64,
+}
+
+/// Still probe/commit control (UVC 1.5 table 4-77).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct StillControl {
+    pub format_index: u8,
+    pub frame_index: u8,
+    pub compression_index: u8,
+    pub max_video_frame_size: u32,
+    pub max_payload_transfer_size: u32,
+}
+
+impl StillControl {
+    pub const LEN: usize = 11;
+
+    pub fn to_bytes(&self) -> Vec<u8> {
+        let mut v = vec![self.format_index, self.frame_index, self.compression_index];
+        v.extend_from_slice(&self.max_video_frame_size.to_le_bytes());
+        v.extend_from_slice(&self.max_payload_transfer_size.to_le_bytes());
+        v
+    }
+
+    pub fn from_bytes(b: &[u8]) -> Self {
+        let mut p = [0u8; 11];
+        p[..b.len().min(11)].copy_from_slice(&b[..b.len().min(11)]);
+        StillControl {
+            format_index: p[0],
+            frame_index: p[1],
+            compression_index: p[2],
+            max_video_frame_size: u32::from_le_bytes(p[3..7].try_into().unwrap()),
+            max_payload_transfer_size: u32::from_le_bytes(p[7..11].try_into().unwrap()),
+        }
+    }
 }
 
 struct FrameTx {
@@ -177,6 +264,7 @@ struct FrameTx {
     offset: usize,
     pts: u32,
     error: bool,
+    still: bool,
 }
 
 struct Stream {
@@ -190,6 +278,21 @@ struct Stream {
     fid: bool,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Report {
+    ProbeCur,
+    ProbeMin,
+    ProbeMax,
+    ProbeDef,
+    CommitCur,
+}
+
+/// Still image trigger values (VS_STILL_IMAGE_TRIGGER_CONTROL).
+const TRIGGER_NORMAL: u8 = 0;
+const TRIGGER_STILL: u8 = 1;
+const TRIGGER_STILL_BULK: u8 = 2;
+const TRIGGER_ABORT: u8 = 3;
+
 /// One VideoStreaming interface.
 pub struct VsInterface {
     pub desc: VideoStreaming,
@@ -198,8 +301,12 @@ pub struct VsInterface {
     pub quirks: StreamQuirks,
     probe: StreamingControl,
     commit: Option<StreamingControl>,
-    still_probe: Vec<u8>,
-    still_commit: Vec<u8>,
+    still_probe: StillControl,
+    still_commit: Option<StillControl>,
+    /// Pending still trigger (method 2: TRIGGER_STILL, method 3: TRIGGER_STILL_BULK).
+    trigger: u8,
+    /// Method 3: still image being sent on the still bulk endpoint.
+    still_tx: Option<FrameTx>,
     alt: u8,
     pub error_code: u8,
     stream: Option<Stream>,
@@ -208,11 +315,13 @@ pub struct VsInterface {
     name: String,
 }
 
-fn pixel_format(kind: &FormatKind) -> Option<PixelFormat> {
+/// Frame generator format for a UVC format, if emuvc can produce it.
+pub fn pixel_format(kind: &FormatKind) -> Option<PixelFormat> {
     match kind {
         FormatKind::Uncompressed { guid, .. } => PixelFormat::from_guid(guid),
         FormatKind::Mjpeg => Some(PixelFormat::Mjpeg),
         FormatKind::FrameBased { guid, .. } if &guid[..4] == b"MJPG" => Some(PixelFormat::Mjpeg),
+        FormatKind::FrameBased { guid, .. } => PixelFormat::from_guid(guid),
         _ => None,
     }
 }
@@ -233,8 +342,10 @@ impl VsInterface {
             quirks,
             probe: StreamingControl::default(),
             commit: None,
-            still_probe: vec![0; 11],
-            still_commit: vec![0; 11],
+            still_probe: StillControl::default(),
+            still_commit: None,
+            trigger: TRIGGER_NORMAL,
+            still_tx: None,
             alt: 0,
             error_code: 0,
             stream: None,
@@ -243,6 +354,16 @@ impl VsInterface {
             name,
         };
         vs.probe = vs.default_probe();
+        vs.still_probe = vs
+            .negotiate_still(
+                &StillControl {
+                    format_index: 1,
+                    frame_index: 1,
+                    ..Default::default()
+                },
+                false,
+            )
+            .unwrap_or_default();
         vs
     }
 
@@ -254,6 +375,16 @@ impl VsInterface {
         self.stream.is_some()
     }
 
+    /// Bulk endpoint of still capture method 3, if any.
+    pub fn still_endpoint(&self) -> Option<u8> {
+        self.desc
+            .formats
+            .iter()
+            .filter_map(|f| f.still.as_ref())
+            .map(|s| s.endpoint)
+            .find(|&e| e != 0)
+    }
+
     fn probe_len(&self) -> usize {
         self.quirks
             .probe_len
@@ -261,10 +392,7 @@ impl VsInterface {
     }
 
     fn header_len(&self) -> usize {
-        match self.quirks.header_len {
-            Some(n @ (2 | 6 | 12)) => n as usize,
-            _ => 12,
-        }
+        self.quirks.header_len.map_or(12, |n| n.max(2) as usize)
     }
 
     fn default_probe(&self) -> StreamingControl {
@@ -275,13 +403,19 @@ impl VsInterface {
         self.negotiate(&req, false).unwrap_or_default()
     }
 
-    /// Size of one frame for the negotiated format/frame.
-    fn frame_size(kind: &FormatKind, frame: &Frame) -> u32 {
+    /// Size of one frame of a format.
+    fn frame_size(kind: &FormatKind, width: u16, height: u16, max_frame_size: u32) -> u32 {
+        let px = width as u32 * height as u32;
         match kind {
             FormatKind::Uncompressed { bits_per_pixel, .. } => {
-                (frame.width as u32 * frame.height as u32 * *bits_per_pixel as u32).div_ceil(8)
+                (px * *bits_per_pixel as u32).div_ceil(8)
             }
-            _ => frame.max_frame_size,
+            // Variable-size frame-based formats report dwBytesPerLine = 0.
+            FormatKind::FrameBased { bits_per_pixel, .. } if max_frame_size == 0 => {
+                (px * (*bits_per_pixel).max(16) as u32).div_ceil(8)
+            }
+            _ if max_frame_size == 0 => px * 2,
+            _ => max_frame_size,
         }
     }
 
@@ -291,22 +425,31 @@ impl VsInterface {
     fn payload_size(&self, kind: &FormatKind, frame: &Frame, interval: u32) -> u32 {
         match &self.desc.transfer {
             Transfer::Isochronous { alts } => {
-                let fps_x = 10_000_000f64 / interval.max(1) as f64;
-                let bytes_per_uframe = match kind {
+                let fps = 10_000_000f64 / interval.max(1) as f64;
+                let bytes_per_s = match kind {
                     FormatKind::Uncompressed { .. } => {
-                        Self::frame_size(kind, frame) as f64 * fps_x / 8000.0
+                        Self::frame_size(kind, frame.width, frame.height, frame.max_frame_size)
+                            as f64
+                            * fps
                     }
-                    _ => frame.max_bit_rate as f64 / 8.0 / 8000.0,
+                    _ => frame.max_bit_rate as f64 / 8.0,
                 };
-                let need = bytes_per_uframe.ceil() as usize + self.header_len();
-                let mut sizes: Vec<usize> = alts.iter().map(|a| a.bytes_per_interval).collect();
-                sizes.sort_unstable();
-                sizes
+                // Payload capacity per second of an alt setting, after headers.
+                let hlen = self.header_len();
+                let capacity = |a: &crate::topology::IsoAlt| {
+                    a.bytes_per_interval.saturating_sub(hlen) as f64 * 8000.0
+                        / a.interval_uframes.max(1) as f64
+                };
+                let mut usable: Vec<&crate::topology::IsoAlt> = alts
                     .iter()
-                    .copied()
-                    .find(|&s| s >= need)
-                    .or(sizes.last().copied())
-                    .unwrap_or(0) as u32
+                    .filter(|a| a.bytes_per_interval > hlen)
+                    .collect();
+                usable.sort_by(|a, b| capacity(a).total_cmp(&capacity(b)));
+                usable
+                    .iter()
+                    .find(|a| capacity(a) >= bytes_per_s)
+                    .or(usable.last())
+                    .map_or(0, |a| a.bytes_per_interval) as u32
             }
             Transfer::Bulk { .. } => 32 * 1024,
         }
@@ -353,7 +496,12 @@ impl VsInterface {
             comp_quality: req.comp_quality,
             comp_window_size: req.comp_window_size,
             delay: 0,
-            max_video_frame_size: Self::frame_size(&format.kind, frame),
+            max_video_frame_size: Self::frame_size(
+                &format.kind,
+                frame.width,
+                frame.height,
+                frame.max_frame_size,
+            ),
             max_payload_transfer_size: self.payload_size(&format.kind, frame, interval),
             ..Default::default()
         };
@@ -368,12 +516,73 @@ impl VsInterface {
     }
 
     /// The structure as the device reports it (quirks applied).
-    fn report(&self, c: &StreamingControl) -> Vec<u8> {
+    fn report(&self, c: &StreamingControl, which: Report) -> Vec<u8> {
         let mut c = c.clone();
         if let Some(m) = self.quirks.max_payload_transfer_size {
             c.max_payload_transfer_size = m;
         }
+        let o = match which {
+            Report::ProbeCur => &self.quirks.probe_cur,
+            Report::ProbeMin => &self.quirks.probe_min,
+            Report::ProbeMax => &self.quirks.probe_max,
+            Report::ProbeDef => &self.quirks.probe_def,
+            Report::CommitCur => &self.quirks.commit_cur,
+        };
+        if let Some(o) = o {
+            if let Some(raw) = &o.raw {
+                return raw.clone();
+            }
+            o.apply(&mut c);
+        }
         c.to_bytes(self.probe_len())
+    }
+
+    /// Negotiates a still probe/commit structure.
+    fn negotiate_still(&self, req: &StillControl, strict: bool) -> Result<StillControl, u8> {
+        let with_still = |i: u8| self.desc.format(i).filter(|f| f.still.is_some());
+        let format = match with_still(req.format_index) {
+            Some(f) => f,
+            None if strict => return Err(ERR_OUT_OF_RANGE),
+            None => self
+                .desc
+                .formats
+                .iter()
+                .find(|f| f.still.is_some())
+                .ok_or(ERR_INVALID_CONTROL)?,
+        };
+        let still = format.still.as_ref().unwrap();
+        let n = still.sizes.len() as u8;
+        if strict && (req.frame_index == 0 || req.frame_index > n) {
+            return Err(ERR_OUT_OF_RANGE);
+        }
+        let frame_index = req.frame_index.clamp(1, n.max(1));
+        let (w, h) = still
+            .sizes
+            .get(frame_index as usize - 1)
+            .copied()
+            .unwrap_or((0, 0));
+        let nc = still.compression.len() as u8;
+        let compression_index = if nc == 0 {
+            0
+        } else {
+            req.compression_index.clamp(1, nc)
+        };
+        let max_payload = match (&self.desc.transfer, still.endpoint) {
+            (_, 0) => {
+                self.commit
+                    .as_ref()
+                    .unwrap_or(&self.probe)
+                    .max_payload_transfer_size
+            }
+            _ => 32 * 1024,
+        };
+        Ok(StillControl {
+            format_index: format.index,
+            frame_index,
+            compression_index,
+            max_video_frame_size: Self::frame_size(&format.kind, w, h, 0),
+            max_payload_transfer_size: max_payload,
+        })
     }
 
     /// Class request to this interface. Returns data or a request error code.
@@ -383,7 +592,18 @@ impl VsInterface {
         request: u8,
         selector: u8,
         data: &[u8],
+        length: u16,
     ) -> Result<Vec<u8>, u8> {
+        let probe_like = matches!(selector, VS_PROBE_CONTROL | VS_COMMIT_CONTROL)
+            && !matches!(request, GET_LEN | GET_INFO);
+        if probe_like && self.quirks.strict_probe_len && length as usize != self.probe_len() {
+            debug!(
+                "{}: probe/commit with wLength {length}, expected {}",
+                self.name,
+                self.probe_len()
+            );
+            return Err(ERR_INVALID_REQUEST);
+        }
         match (selector, request) {
             (VS_PROBE_CONTROL, SET_CUR) => {
                 let req = StreamingControl::from_bytes(data);
@@ -391,8 +611,8 @@ impl VsInterface {
                 debug!("{}: probe {:?} -> {:?}", self.name, req, self.probe);
                 Ok(Vec::new())
             }
-            (VS_PROBE_CONTROL, GET_CUR) => Ok(self.report(&self.probe)),
-            (VS_PROBE_CONTROL, GET_DEF) => Ok(self.report(&self.default_probe())),
+            (VS_PROBE_CONTROL, GET_CUR) => Ok(self.report(&self.probe, Report::ProbeCur)),
+            (VS_PROBE_CONTROL, GET_DEF) => Ok(self.report(&self.default_probe(), Report::ProbeDef)),
             (VS_PROBE_CONTROL, GET_MIN | GET_MAX) => {
                 let mut c = self.probe.clone();
                 if let Some(frame) = self
@@ -413,7 +633,14 @@ impl VsInterface {
                     c.key_frame_rate = if is_max { 0xffff } else { 0 };
                     c.p_frame_rate = if is_max { 0xffff } else { 0 };
                 }
-                Ok(self.report(&c))
+                Ok(self.report(
+                    &c,
+                    if request == GET_MAX {
+                        Report::ProbeMax
+                    } else {
+                        Report::ProbeMin
+                    },
+                ))
             }
             (VS_PROBE_CONTROL | VS_COMMIT_CONTROL, GET_LEN) => {
                 Ok((self.probe_len() as u16).to_le_bytes().to_vec())
@@ -432,35 +659,110 @@ impl VsInterface {
                 }
                 Ok(Vec::new())
             }
-            (VS_COMMIT_CONTROL, GET_CUR) => {
-                Ok(self.report(self.commit.as_ref().unwrap_or(&self.probe)))
-            }
+            (VS_COMMIT_CONTROL, GET_CUR) => Ok(self.report(
+                self.commit.as_ref().unwrap_or(&self.probe),
+                Report::CommitCur,
+            )),
             (VS_STILL_PROBE_CONTROL, SET_CUR) => {
-                self.still_probe = data.to_vec();
-                self.still_probe.resize(11, 0);
+                self.still_probe = self.negotiate_still(&StillControl::from_bytes(data), false)?;
                 Ok(Vec::new())
             }
-            (VS_STILL_PROBE_CONTROL, GET_CUR | GET_MIN | GET_MAX | GET_DEF) => {
-                Ok(self.still_probe.clone())
+            (VS_STILL_PROBE_CONTROL, GET_CUR) => Ok(self.still_probe.to_bytes()),
+            (VS_STILL_PROBE_CONTROL, GET_MIN | GET_DEF) => {
+                let req = StillControl {
+                    format_index: self.still_probe.format_index,
+                    frame_index: 1,
+                    compression_index: 1,
+                    ..Default::default()
+                };
+                Ok(self.negotiate_still(&req, false)?.to_bytes())
+            }
+            (VS_STILL_PROBE_CONTROL, GET_MAX) => {
+                let req = StillControl {
+                    format_index: self.still_probe.format_index,
+                    frame_index: u8::MAX,
+                    compression_index: u8::MAX,
+                    ..Default::default()
+                };
+                Ok(self.negotiate_still(&req, false)?.to_bytes())
             }
             (VS_STILL_COMMIT_CONTROL, SET_CUR) => {
-                self.still_commit = data.to_vec();
-                self.still_commit.resize(11, 0);
+                let c = self.negotiate_still(&StillControl::from_bytes(data), true)?;
+                info!(
+                    "{}: still commit format {} frame {}",
+                    self.name, c.format_index, c.frame_index
+                );
+                self.still_commit = Some(c);
                 Ok(Vec::new())
             }
-            (VS_STILL_COMMIT_CONTROL, GET_CUR) => Ok(self.still_commit.clone()),
-            (VS_STILL_PROBE_CONTROL | VS_STILL_COMMIT_CONTROL, GET_LEN) => Ok(vec![11, 0]),
+            (VS_STILL_COMMIT_CONTROL, GET_CUR) => {
+                Ok(self.still_commit.unwrap_or(self.still_probe).to_bytes())
+            }
+            (VS_STILL_PROBE_CONTROL | VS_STILL_COMMIT_CONTROL, GET_LEN) => {
+                Ok((StillControl::LEN as u16).to_le_bytes().to_vec())
+            }
             (VS_STILL_PROBE_CONTROL | VS_STILL_COMMIT_CONTROL, GET_INFO) => {
                 Ok(vec![INFO_GET | INFO_SET])
             }
-            (VS_STILL_IMAGE_TRIGGER_CONTROL, SET_CUR) => Ok(Vec::new()),
-            (VS_STILL_IMAGE_TRIGGER_CONTROL, GET_CUR) => Ok(vec![0]),
+            (VS_STILL_IMAGE_TRIGGER_CONTROL, SET_CUR) => self
+                .trigger_still(cx, data.first().copied().unwrap_or(0))
+                .map(|_| Vec::new()),
+            (VS_STILL_IMAGE_TRIGGER_CONTROL, GET_CUR) => Ok(vec![self.trigger]),
             (VS_STILL_IMAGE_TRIGGER_CONTROL, GET_INFO) => Ok(vec![INFO_GET | INFO_SET]),
             (VS_STREAM_ERROR_CODE_CONTROL, GET_CUR) => Ok(vec![self.error_code]),
             (VS_STREAM_ERROR_CODE_CONTROL, GET_INFO) => Ok(vec![INFO_GET]),
             (VS_PROBE_CONTROL..=VS_STREAM_ERROR_CODE_CONTROL, _) => Err(ERR_INVALID_REQUEST),
             _ => Err(ERR_INVALID_CONTROL),
         }
+    }
+
+    fn trigger_still(&mut self, cx: &mut Ctx, value: u8) -> Result<(), u8> {
+        match (value, self.desc.still_capture_method) {
+            (TRIGGER_NORMAL | TRIGGER_ABORT, _) => {
+                self.trigger = TRIGGER_NORMAL;
+                self.still_tx = None;
+                Ok(())
+            }
+            (TRIGGER_STILL, 2 | 3) if self.stream.is_some() => {
+                info!("{}: still image triggered (in stream)", self.name);
+                self.trigger = TRIGGER_STILL;
+                Ok(())
+            }
+            (TRIGGER_STILL_BULK, 3) => {
+                info!("{}: still image triggered (bulk pipe)", self.name);
+                self.trigger = TRIGGER_STILL_BULK;
+                self.still_tx = self.render_still(cx.now_ns());
+                Ok(())
+            }
+            (TRIGGER_STILL | TRIGGER_STILL_BULK, _) => Err(ERR_WRONG_STATE),
+            _ => Err(ERR_OUT_OF_RANGE),
+        }
+    }
+
+    /// Renders the committed still image.
+    fn render_still(&mut self, now_ns: u64) -> Option<FrameTx> {
+        let c = self.still_commit.unwrap_or(self.still_probe);
+        let format = self.desc.format(c.format_index)?;
+        let (w, h) = *format
+            .still
+            .as_ref()?
+            .sizes
+            .get(c.frame_index.max(1) as usize - 1)?;
+        let spec = FrameSpec {
+            format: pixel_format(&format.kind)?,
+            width: w,
+            height: h,
+        };
+        let data = self.source.render(&spec, 0, now_ns);
+        let pts = self.ticks(now_ns);
+        Some(FrameTx {
+            index: 0,
+            data,
+            offset: 0,
+            pts,
+            error: false,
+            still: true,
+        })
     }
 
     pub fn set_alt(&mut self, cx: &mut Ctx, alt: u8) {
@@ -476,13 +778,16 @@ impl VsInterface {
         self.stop();
         self.alt = 0;
         self.commit = None;
+        self.still_commit = None;
+        self.trigger = TRIGGER_NORMAL;
+        self.still_tx = None;
         self.probe = self.default_probe();
         self.error_code = 0;
     }
 
-    pub fn clear_halt(&mut self) {
+    pub fn clear_halt(&mut self, ep: u8) {
         // UVC 1.5 §2.4.3.2.4: on bulk, CLEAR_FEATURE(ENDPOINT_HALT) stops the stream.
-        if matches!(self.desc.transfer, Transfer::Bulk { .. }) {
+        if ep == self.desc.endpoint && matches!(self.desc.transfer, Transfer::Bulk { .. }) {
             self.stop();
         }
     }
@@ -551,6 +856,9 @@ impl VsInterface {
         if self.stream.take().is_some() {
             info!("{}: stop streaming ({:?})", self.name, self.stats);
         }
+        if self.trigger == TRIGGER_STILL {
+            self.trigger = TRIGGER_NORMAL;
+        }
     }
 
     /// Bus time at which the next frame becomes available (bulk pacing).
@@ -582,90 +890,125 @@ impl VsInterface {
         let skipped = latest - st.next_frame;
         st.next_frame = latest + 1;
         self.stats.frames_dropped += skipped;
-        let every = |n: Option<u32>| n.is_some_and(|n| n > 0 && latest % n as u64 == n as u64 - 1);
+        let scoped = self.quirks.only_first_frames.is_none_or(|n| latest < n);
+        let every = |n: Option<u32>| {
+            scoped && n.is_some_and(|n| n > 0 && latest % n as u64 == n as u64 - 1)
+        };
         if every(self.quirks.drop_every) {
             self.stats.frames_dropped += 1;
             return;
         }
+        let truncate = every(self.quirks.truncate_every);
+        let error = every(self.quirks.err_every);
         let captured_ns = st.start_ns + latest * st.interval_ns;
         let (spec, interval_ns) = (st.spec, st.interval_ns);
-        let mut data = self.source.render(&spec, latest, captured_ns);
-        self.source
-            .prefetch(&spec, latest + 1, captured_ns + interval_ns);
-        if every(self.quirks.truncate_every) {
-            data.truncate(data.len() / 2);
+        // Method 2 still capture: this frame is the still image.
+        let mut tx = if self.trigger == TRIGGER_STILL {
+            self.trigger = TRIGGER_NORMAL;
+            self.render_still(captured_ns)
+        } else {
+            None
+        };
+        if tx.is_none() {
+            let data = self.source.render(&spec, latest, captured_ns);
+            self.source
+                .prefetch(&spec, latest + 1, captured_ns + interval_ns);
+            tx = Some(FrameTx {
+                index: latest,
+                data,
+                offset: 0,
+                pts: self.ticks(captured_ns),
+                error,
+                still: false,
+            });
         }
-        let error = every(self.quirks.err_every);
-        let pts = self.ticks(captured_ns);
+        let mut tx = tx.unwrap();
+        if truncate {
+            tx.data.truncate(tx.data.len() / 2);
+        }
         let st = self.stream.as_mut().unwrap();
         if !self.quirks.no_fid_toggle {
             st.fid = !st.fid;
         }
-        st.cur = Some(FrameTx {
-            index: latest,
-            data,
-            offset: 0,
-            pts,
-            error,
-        });
+        st.cur = Some(tx);
+    }
+
+    /// Writes a payload header for `f` (or an idle header) into `out`.
+    fn header(&self, out: &mut Vec<u8>, fid: bool, f: Option<&FrameTx>, eof: bool, now: BusTime) {
+        let hlen = self.header_len();
+        let mut info = HDR_EOH | if fid { HDR_FID } else { 0 };
+        if hlen >= 6 || self.quirks.lie_pts_scr {
+            info |= HDR_PTS;
+        }
+        if hlen >= 12 || self.quirks.lie_pts_scr {
+            info |= HDR_SCR;
+        }
+        if eof && !self.quirks.no_eof {
+            info |= HDR_EOF;
+        }
+        if f.is_some_and(|f| f.error) {
+            info |= HDR_ERR;
+        }
+        if f.is_some_and(|f| f.still) {
+            info |= HDR_STI;
+        }
+        let start = out.len();
+        out.push(hlen as u8);
+        out.push(info);
+        if hlen >= 6 {
+            out.extend_from_slice(&f.map_or(0, |f| f.pts).to_le_bytes());
+        }
+        if hlen >= 12 {
+            out.extend_from_slice(&self.ticks(now * UFRAME_NS).to_le_bytes());
+            out.extend_from_slice(&(((now / 8) & 0x7ff) as u16).to_le_bytes());
+        }
+        // Metadata after the SCR: the frame index, then a filler pattern.
+        let meta = f.map_or(0, |f| f.index as u32).to_le_bytes();
+        while out.len() - start < hlen {
+            let i = out.len() - start - 12.min(out.len() - start);
+            out.push(*meta.get(i).unwrap_or(&0xa5));
+        }
+    }
+
+    /// Takes up to `room` bytes of a frame; returns (bytes, end of frame).
+    fn chunk(f: &mut FrameTx, room: usize) -> (&[u8], bool) {
+        let n = (f.data.len() - f.offset).min(room);
+        let s = f.offset;
+        f.offset += n;
+        (&f.data[s..s + n], f.offset == f.data.len())
     }
 
     /// Builds the next payload of at most `cap` bytes. `None`: nothing to send.
     fn payload(&mut self, now: BusTime, cap: usize) -> Option<Vec<u8>> {
-        let now_ns = now * UFRAME_NS;
-        self.pick_frame(now_ns);
+        self.pick_frame(now * UFRAME_NS);
         let hlen = self.header_len();
         if cap < hlen {
             // The host's packet can't even hold a header.
             return None;
         }
-        let stc = self.ticks(now_ns);
-        let no_eof = self.quirks.no_eof;
-        let st = self.stream.as_mut()?;
-        let mut info = HDR_EOH | if st.fid { HDR_FID } else { 0 };
-        if hlen >= 6 {
-            info |= HDR_PTS;
-        }
-        if hlen >= 12 {
-            info |= HDR_SCR;
-        }
+        let mut st = self.stream.take()?;
         let mut out = Vec::with_capacity(cap.min(st.payload_size.max(hlen)));
-        let mut finished = None;
-        let pts = match &mut st.cur {
+        let mut body = Vec::new();
+        let eof = match st.cur.as_mut() {
             Some(f) => {
-                let n = (f.data.len() - f.offset).min(cap.saturating_sub(hlen));
-                if f.offset + n == f.data.len() {
-                    if !no_eof {
-                        info |= HDR_EOF;
-                    }
-                    finished = Some(f.index);
-                }
-                if f.error {
-                    info |= HDR_ERR;
-                }
-                f.pts
+                let (data, eof) = Self::chunk(f, cap - hlen);
+                body.extend_from_slice(data);
+                eof
             }
-            None => 0,
+            None => false,
         };
-        out.push(hlen as u8);
-        out.push(info);
-        if hlen >= 6 {
-            out.extend_from_slice(&pts.to_le_bytes());
-        }
-        if hlen >= 12 {
-            out.extend_from_slice(&stc.to_le_bytes());
-            out.extend_from_slice(&(((now / 8) & 0x7ff) as u16).to_le_bytes());
-        }
-        if let Some(f) = &mut st.cur {
-            let n = (f.data.len() - f.offset).min(cap.saturating_sub(hlen));
-            out.extend_from_slice(&f.data[f.offset..f.offset + n]);
-            f.offset += n;
-        }
-        if finished.is_some() {
-            st.cur = None;
-            self.stats.frames_sent += 1;
+        self.header(&mut out, st.fid, st.cur.as_ref(), eof, now);
+        out.extend_from_slice(&body);
+        if eof {
+            let f = st.cur.take().unwrap();
+            if f.still {
+                self.stats.stills_sent += 1;
+            } else {
+                self.stats.frames_sent += 1;
+            }
         }
         self.stats.payloads += 1;
+        self.stream = Some(st);
         Some(out)
     }
 
@@ -690,6 +1033,24 @@ impl VsInterface {
         self.pick_frame(cx.now_ns());
         self.stream.as_ref()?.cur.as_ref()?;
         self.payload(cx.now(), cap)
+    }
+
+    /// Method 3: one transfer on the still image bulk endpoint.
+    pub fn still_in(&mut self, cx: &mut Ctx, max_len: usize) -> Option<Vec<u8>> {
+        let hlen = self.header_len();
+        let mut f = self.still_tx.take()?;
+        let (data, eof) = Self::chunk(&mut f, max_len.saturating_sub(hlen));
+        let body = data.to_vec();
+        let mut out = Vec::with_capacity(hlen + body.len());
+        self.header(&mut out, false, Some(&f), eof, cx.now());
+        out.extend_from_slice(&body);
+        if eof {
+            self.trigger = TRIGGER_NORMAL;
+            self.stats.stills_sent += 1;
+        } else {
+            self.still_tx = Some(f);
+        }
+        Some(out)
     }
 }
 

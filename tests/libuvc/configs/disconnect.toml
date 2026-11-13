@@ -1,0 +1,6 @@
+[[device]]
+model = "luxvisions-30c9-0052"
+[[device.fault]]
+on = { iso_in = {} }
+action = "disconnect"
+skip = 40

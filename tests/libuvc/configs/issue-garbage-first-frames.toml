@@ -1,0 +1,4 @@
+# libuvc #183/#122: truncated frames while the sensor starts.
+[[device]]
+model = "luxvisions-30c9-0052"
+uvc = { truncate_every = 1, only_first_frames = 3 }

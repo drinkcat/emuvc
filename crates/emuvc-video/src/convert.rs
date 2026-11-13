@@ -109,6 +109,77 @@ pub fn rgb_to_grey(rgb: &[u8], w: usize, h: usize, out: &mut Vec<u8>) {
     out.extend(rgb[..w * h * 3].as_chunks::<3>().0.iter().map(|p| luma(p)));
 }
 
+/// Convert to 16-bit little-endian luma (`luma << 8 | luma`).
+pub fn rgb_to_grey16(rgb: &[u8], w: usize, h: usize, out: &mut Vec<u8>) {
+    out.clear();
+    assert!(rgb.len() >= w * h * 3, "rgb buffer too small");
+    for p in rgb[..w * h * 3].as_chunks::<3>().0 {
+        let l = luma(p);
+        out.extend_from_slice(&[l, l]);
+    }
+}
+
+/// Convert to NV21 (NV12 with V before U).
+pub fn rgb_to_nv21(rgb: &[u8], w: usize, h: usize, out: &mut Vec<u8>) {
+    rgb_to_nv12(rgb, w, h, out);
+    let w2 = w.div_ceil(2) * 2;
+    for uv in out[w2 * h..].as_chunks_mut::<2>().0 {
+        uv.swap(0, 1);
+    }
+}
+
+/// Convert to P010: Y plane then interleaved UV, 16-bit LE words, 10-bit value in the top bits.
+pub fn rgb_to_p010(rgb: &[u8], w: usize, h: usize, out: &mut Vec<u8>) {
+    let mut tmp = Vec::new();
+    rgb_to_nv12(rgb, w, h, &mut tmp);
+    out.clear();
+    out.reserve(tmp.len() * 2);
+    for &v in &tmp {
+        out.extend_from_slice(&[v << 6, v]);
+    }
+}
+
+/// Convert to planar I420 (Y, U, V; chroma planes at half resolution, rounded up).
+pub fn rgb_to_i420(rgb: &[u8], w: usize, h: usize, out: &mut Vec<u8>) {
+    let mut tmp = Vec::new();
+    rgb_to_nv12(rgb, w, h, &mut tmp);
+    out.clear();
+    if tmp.is_empty() {
+        return;
+    }
+    let w2 = w.div_ceil(2) * 2;
+    let ysz = w2 * h;
+    out.extend_from_slice(&tmp[..ysz]);
+    let (uv, _) = tmp[ysz..].as_chunks::<2>();
+    out.extend(uv.iter().map(|p| p[0]));
+    out.extend(uv.iter().map(|p| p[1]));
+}
+
+/// Convert to packed 24-bit; `bgr` selects B G R order, otherwise R G B.
+pub fn rgb_to_rgb24(rgb: &[u8], w: usize, h: usize, out: &mut Vec<u8>, bgr: bool) {
+    out.clear();
+    assert!(rgb.len() >= w * h * 3, "rgb buffer too small");
+    out.extend_from_slice(&rgb[..w * h * 3]);
+    if bgr {
+        out.as_chunks_mut::<3>()
+            .0
+            .iter_mut()
+            .for_each(|p| p.swap(0, 2));
+    }
+}
+
+/// Bayer pattern, listing channels (0 = R, 1 = G, 2 = B) of the 2x2 cell in raster order.
+pub fn rgb_to_bayer(rgb: &[u8], w: usize, h: usize, out: &mut Vec<u8>, pattern: [usize; 4]) {
+    out.clear();
+    assert!(rgb.len() >= w * h * 3, "rgb buffer too small");
+    out.reserve(w * h);
+    for y in 0..h {
+        for x in 0..w {
+            out.push(rgb[(y * w + x) * 3 + pattern[(y & 1) * 2 + (x & 1)]]);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -127,5 +198,17 @@ mod tests {
         assert_eq!(out.len(), 6 * 3 * 2);
         rgb_to_nv12(&rgb, 5, 3, &mut out);
         assert_eq!(out.len(), 6 * 3 + 6 * 2);
+    }
+
+    #[test]
+    fn new_formats_sizes() {
+        let rgb = vec![100u8; 5 * 3 * 3];
+        let mut out = Vec::new();
+        rgb_to_i420(&rgb, 5, 3, &mut out);
+        assert_eq!(out.len(), 6 * 3 + 2 * 3 * 2);
+        rgb_to_p010(&rgb, 5, 3, &mut out);
+        assert_eq!(out.len(), (6 * 3 + 6 * 2) * 2);
+        rgb_to_bayer(&rgb, 5, 3, &mut out, [0, 1, 1, 2]);
+        assert_eq!(out.len(), 15);
     }
 }

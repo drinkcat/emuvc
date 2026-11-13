@@ -1,0 +1,4 @@
+# SuperSpeed isochronous (companion descriptors with bursts/mult).
+[[device]]
+model = "synthetic"
+synthetic = { speed = "super" }

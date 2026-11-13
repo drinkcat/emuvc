@@ -1,0 +1,4 @@
+# libuvc PR #336: continuous intervals with dwFrameIntervalStep 0.
+[[device]]
+model = "synthetic"
+synthetic = { continuous = true, interval_step = 0 }

@@ -8,6 +8,7 @@
 use std::collections::{BTreeMap, VecDeque};
 
 use log::debug;
+use serde::{Deserialize, Serialize};
 
 use emuvc_usb::{
     BusTime, ControlReply, Ctx, Function, InReply, IsoReply, SetupPacket, Speed, UsbError,
@@ -29,7 +30,59 @@ pub struct UvcFunction {
     request_error: u8,
     status: VecDeque<Vec<u8>>,
     pub vs: Vec<VsInterface>,
+    events: Vec<ScheduledEvent>,
 }
+
+/// A device-initiated event, e.g. from a test scenario:
+///
+/// ```toml
+/// [[device.event]]
+/// every_ms = 500        # first at at_ms (default 0), then periodically
+/// kind = "button"
+///
+/// [[device.event]]
+/// at_ms = 200
+/// kind = { control = { entity = 1, selector = 0x11, value = [1] } }  # privacy shutter closed
+///
+/// [[device.event]]
+/// kind = { raw = [1, 2] }   # arbitrary (here: truncated) status packet
+/// ```
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct EventSpec {
+    #[serde(default)]
+    pub at_ms: u64,
+    #[serde(default)]
+    pub every_ms: Option<u64>,
+    /// Stop after this many occurrences.
+    #[serde(default)]
+    pub count: Option<u32>,
+    pub kind: EventKind,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+pub enum EventKind {
+    /// Still image button press then release (first streaming interface).
+    Button,
+    /// Control changed by the device: new value + "value changed" interrupt.
+    Control {
+        entity: u8,
+        selector: u8,
+        value: Vec<u8>,
+    },
+    /// An arbitrary status interrupt packet (malformed ones included).
+    Raw(Vec<u8>),
+}
+
+struct ScheduledEvent {
+    spec: EventSpec,
+    next: Option<BusTime>,
+    fired: u32,
+}
+
+/// Status packets the host hasn't read yet are dropped beyond this.
+const MAX_QUEUED_STATUS: usize = 64;
 
 fn unit_of(kind: &EntityKind) -> Option<Unit> {
     match kind {
@@ -123,6 +176,7 @@ impl UvcFunction {
             request_error: 0,
             status: VecDeque::new(),
             vs,
+            events: Vec::new(),
         };
         f.update_auto_links(false);
         f
@@ -170,12 +224,65 @@ impl UvcFunction {
 
     /// Queues a VideoStreaming button press/release interrupt.
     pub fn button(&mut self, interface: u8, pressed: bool) {
-        self.status.push_back(vec![
+        self.push_status(vec![
             STATUS_ORIGINATOR_VS,
             interface,
             STATUS_EVENT_BUTTON_PRESS,
             pressed as u8,
         ]);
+    }
+
+    /// Schedules device-initiated events (bus time origin).
+    pub fn set_events(&mut self, events: Vec<EventSpec>) {
+        self.events = events
+            .into_iter()
+            .map(|spec| ScheduledEvent {
+                next: Some(spec.at_ms * 8),
+                spec,
+                fired: 0,
+            })
+            .collect();
+    }
+
+    fn push_status(&mut self, p: Vec<u8>) {
+        if self.status.len() >= MAX_QUEUED_STATUS {
+            self.status.pop_front();
+        }
+        self.status.push_back(p);
+    }
+
+    fn fire_events(&mut self, now: BusTime) {
+        let mut due = Vec::new();
+        for e in &mut self.events {
+            while e.next.is_some_and(|t| t <= now) {
+                due.push(e.spec.kind.clone());
+                e.fired += 1;
+                let more = e.spec.count.is_none_or(|c| e.fired < c);
+                e.next = match (e.spec.every_ms, more) {
+                    (Some(p), true) if p > 0 => e.next.map(|t| t + p * 8),
+                    _ => None,
+                };
+            }
+        }
+        for kind in due {
+            debug!("{}: event {kind:?}", self.name);
+            match kind {
+                EventKind::Button => {
+                    let iface = self
+                        .vs
+                        .first()
+                        .map_or(self.vc.interface + 1, |v| v.interface());
+                    self.button(iface, true);
+                    self.button(iface, false);
+                }
+                EventKind::Control {
+                    entity,
+                    selector,
+                    value,
+                } => self.device_set(entity, selector, &value),
+                EventKind::Raw(p) => self.push_status(p),
+            }
+        }
     }
 
     fn push_control_change(&mut self, entity: u8, selector: u8, attribute: u8, value: Vec<u8>) {
@@ -187,7 +294,7 @@ impl UvcFunction {
             attribute,
         ];
         p.extend(value);
-        self.status.push_back(p);
+        self.push_status(p);
     }
 
     /// Recomputes which controls are disabled by an "auto" control; with
@@ -284,7 +391,13 @@ impl Function for UvcFunction {
         let r = if iface == self.vc.interface {
             self.vc_request(setup, data)
         } else if let Some(vs) = self.vs_mut(iface) {
-            vs.control(cx, setup.request, (setup.value >> 8) as u8, data)
+            vs.control(
+                cx,
+                setup.request,
+                (setup.value >> 8) as u8,
+                data,
+                setup.length,
+            )
         } else {
             Err(ERR_INVALID_UNIT)
         };
@@ -342,6 +455,9 @@ impl Function for UvcFunction {
                 None => InReply::Nak,
             };
         }
+        if let Some(vs) = self.vs.iter_mut().find(|v| v.still_endpoint() == Some(ep)) {
+            return vs.still_in(cx, max_len).map_or(InReply::Nak, InReply::Data);
+        }
         match self.vs.iter_mut().find(|v| v.desc.endpoint == ep) {
             Some(vs) => vs.bulk_in(cx, max_len).map_or(InReply::Nak, InReply::Data),
             None => InReply::Error(UsbError::Stall),
@@ -356,16 +472,21 @@ impl Function for UvcFunction {
     }
 
     fn clear_halt(&mut self, _cx: &mut Ctx, ep: u8) {
-        if let Some(vs) = self.vs.iter_mut().find(|v| v.desc.endpoint == ep) {
-            vs.clear_halt();
+        for vs in &mut self.vs {
+            vs.clear_halt(ep);
         }
     }
 
     fn next_wakeup(&self) -> Option<BusTime> {
-        self.vs
+        let bulk = self
+            .vs
             .iter()
             .filter(|v| matches!(v.desc.transfer, Transfer::Bulk { .. }))
-            .filter_map(|v| v.next_wakeup())
-            .min()
+            .filter_map(|v| v.next_wakeup());
+        bulk.chain(self.events.iter().filter_map(|e| e.next)).min()
+    }
+
+    fn tick(&mut self, cx: &mut Ctx) {
+        self.fire_events(cx.now());
     }
 }

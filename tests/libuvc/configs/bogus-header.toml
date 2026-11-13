@@ -1,0 +1,13 @@
+# Corrupted payload headers: bHeaderLength 12 -> 243 (longer than the
+# packet: libuvc's "bogus packet" path) or 12 -> 1 (no header).
+seed = 5
+[[device]]
+model = "luxvisions-30c9-0052"
+[[device.fault]]
+on = { iso_in = {} }
+action = { corrupt = { offset = 0, xor = 0xff } }
+probability = 0.02
+[[device.fault]]
+on = { iso_in = {} }
+action = { corrupt = { offset = 0, xor = 0x0d } }
+probability = 0.02

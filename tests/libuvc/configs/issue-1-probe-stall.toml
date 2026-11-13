@@ -1,0 +1,9 @@
+# libuvc #1 (Apple iSight): every probe/commit request stalls.
+[[device]]
+model = "luxvisions-30c9-0052"
+[[device.fault]]
+on = { control = { request_type = 0x21, selector = 1 } }
+action = "stall"
+[[device.fault]]
+on = { control = { request_type = 0x21, selector = 2 } }
+action = "stall"

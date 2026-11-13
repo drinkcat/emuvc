@@ -1,0 +1,27 @@
+seed = 3
+[[device]]
+model = "luxvisions-30c9-0052"
+[[device.fault]]
+on = { iso_in = {} }
+action = { error = "stall" }
+probability = 0.02
+[[device.fault]]
+on = { iso_in = {} }
+action = { error = "overflow" }
+probability = 0.02
+[[device.fault]]
+on = { iso_in = {} }
+action = { error = "timeout" }
+probability = 0.02
+[[device.fault]]
+on = { iso_in = {} }
+action = { error = "short_packet" }
+probability = 0.02
+[[device.fault]]
+on = { iso_in = {} }
+action = "zlp"
+probability = 0.02
+[[device.fault]]
+on = { iso_in = {} }
+action = { truncate = 3 }
+probability = 0.02
