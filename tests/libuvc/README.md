@@ -56,7 +56,11 @@ and processing unit control it checks GET_INFO and the STALL with the right Requ
 out of range (0x04) outside GET_MIN/GET_MAX, invalid value within range (0x08) off the GET_RES
 grid, and wrong state (0x02) while an auto mode disables the control. It also checks that auto
 switches (focus, white balance, hue, contrast, every AE mode in GET_RES) disable and re-enable
-their manual controls. `still` checks that a method 2 trigger yields exactly one frame of the
+their manual controls. Extension unit controls must honour GET_INFO: without D0 or D1, GET_CUR or
+SET_CUR STALLs with "invalid request". A SET_CUR whose length isn't GET_LEN must also STALL.
+`configs/synthetic-xu.toml` reshapes them with `[[device.control]]`. The VC power mode control, if
+present, accepts mode 0, accepts mode 1 only when D4 says it is supported, rejects reserved modes
+and keeps its read-only bits. `still` checks that a method 2 trigger yields exactly one frame of the
 still size before video frames resume.
 `async` sets every asynchronous camera terminal or processing unit control (GET_INFO D4) and
 expects the UVC 1.5 2.4.4 flow. The SET_CUR is accepted at once, and GET_CUR/SET_CUR on that

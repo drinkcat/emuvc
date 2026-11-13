@@ -312,7 +312,7 @@ static const enum uvc_req_code REQS[] = {UVC_GET_CUR, UVC_GET_MIN, UVC_GET_MAX, 
 /* ---- spec rules for controls, derived from what the device reports (UVC 1.5 4.1.2, 4.2) ---- */
 #define VC_REQUEST_ERROR_CODE_CONTROL 0x02
 enum { INFO_GET = 1, INFO_SET = 2, INFO_DISABLED = 4, INFO_AUTOUPDATE = 8, INFO_ASYNC = 16 };
-enum { ERR_NOT_READY = 0x01, ERR_WRONG_STATE = 0x02, ERR_OUT_OF_RANGE = 0x04, ERR_INVALID_VALUE_WITHIN_RANGE = 0x08 };
+enum { ERR_NOT_READY = 0x01, ERR_WRONG_STATE = 0x02, ERR_OUT_OF_RANGE = 0x04, ERR_INVALID_REQUEST = 0x07, ERR_INVALID_VALUE_WITHIN_RANGE = 0x08 };
 
 /* bRequestErrorCode for the last request, or -1 when the device has no such control. */
 static int req_error(void) {
@@ -488,6 +488,34 @@ static void check_control_rules(void) {
   check_auto_links(ct, pu);
 }
 
+/* VC_VIDEO_POWER_MODE_CONTROL (4.2.1.1, interface control: unit 0): D3..0 the mode (0 full power,
+ * 1 vendor dependent if D4 says it is supported, others reserved), D7..4 read-only. */
+#define VC_VIDEO_POWER_MODE_CONTROL 0x01
+static void check_power_mode(void) {
+  int info = ctrl_info(0, VC_VIDEO_POWER_MODE_CONTROL);
+  if (info < 0) { printf("  power mode control: none\n"); return; }
+  expect((info & (INFO_GET | INFO_SET)) == (INFO_GET | INFO_SET), "power mode: GET_INFO 0x%x has GET and SET", info);
+  uint8_t cur = 0, b = 0, v;
+  expect(uvc_get_ctrl(devh, 0, VC_VIDEO_POWER_MODE_CONTROL, &cur, 1, UVC_GET_CUR) == 1, "power mode: GET_CUR");
+  int vendor = !!(cur & 0x10);
+  expect((cur & 0x0f) == 0 || ((cur & 0x0f) == 1 && vendor), "power mode: valid mode in 0x%02x", cur);
+  for (v = 0; v <= 2; v++) {
+    int ok = v == 0 || (v == 1 && vendor);
+    int r = uvc_set_ctrl(devh, 0, VC_VIDEO_POWER_MODE_CONTROL, &v, 1);
+    if (!ok) { expect_rejected(r, ERR_OUT_OF_RANGE, "unsupported power mode", 0, VC_VIDEO_POWER_MODE_CONTROL); continue; }
+    expect(r == 1, "power mode %u accepted", v);
+    expect(uvc_get_ctrl(devh, 0, VC_VIDEO_POWER_MODE_CONTROL, &b, 1, UVC_GET_CUR) == 1 && b == ((cur & 0xf0) | v),
+           "power mode %u: read back 0x%02x (read-only bits 0x%02x kept)", v, b, cur & 0xf0);
+  }
+  /* libuvc's enum uvc_device_power_mode: 0x0b/0x1b (reserved modes) in older libuvc, 0/1 now */
+  uvc_error_t e = uvc_set_power_mode(devh, UVC_VC_VIDEO_POWER_MODE_FULL);
+  printf("  power mode 0x%02x (D4 vendor mode %d): uvc_set_power_mode(UVC_VC_VIDEO_POWER_MODE_FULL) writes 0x%02x: %s\n",
+         cur, vendor, (unsigned)UVC_VC_VIDEO_POWER_MODE_FULL, uvc_strerror(e));
+  soft(e);
+  v = cur & 0x0f;
+  expect(uvc_set_ctrl(devh, 0, VC_VIDEO_POWER_MODE_CONTROL, &v, 1) == 1, "power mode restore");
+}
+
 static void mode_controls(void) {
   expect(open_device() == 0, "open device");
   if (!devh) return;
@@ -578,14 +606,24 @@ static void mode_controls(void) {
       int len = uvc_get_ctrl_len(devh, x->bUnitID, sel);
       soft(len);
       if (len <= 0 || len > 1024) continue;
-      uint8_t *b = calloc(1, len), *b2 = calloc(1, len);
-      int r = uvc_get_ctrl(devh, x->bUnitID, sel, b, len, UVC_GET_CUR);
+      uint8_t *b = calloc(1, len + 1), *b2 = calloc(1, len + 1);
+      int info = ctrl_info(x->bUnitID, sel);
+      printf("  XU %u/%d len=%d info=0x%02x\n", x->bUnitID, sel, len, info < 0 ? 0 : info);
+      expect(info >= 0, "XU %u/%d: GET_INFO", x->bUnitID, sel);
+      int r = (info & INFO_ASYNC) ? get_cur_ready(x->bUnitID, sel, b, len) : uvc_get_ctrl(devh, x->bUnitID, sel, b, len, UVC_GET_CUR);
+      /* GET_INFO says which of GET_CUR / SET_CUR exist (4.1.2) */
+      if (info >= 0 && !(info & INFO_GET)) expect_rejected(r, ERR_INVALID_REQUEST, "GET_CUR without GET_INFO D0", x->bUnitID, sel);
       for (unsigned i = 1; i < 7; i++) soft(uvc_get_ctrl(devh, x->bUnitID, sel, b2, len, REQS[i]));
+      if (info >= 0 && !(info & INFO_SET))
+        expect_rejected(uvc_set_ctrl(devh, x->bUnitID, sel, b, len), ERR_INVALID_REQUEST, "SET_CUR without GET_INFO D1", x->bUnitID, sel);
       if (r == len) {
         xok++;
-        int w = soft(uvc_set_ctrl(devh, x->bUnitID, sel, b, len));
+        int w = (info & INFO_SET) ? soft(uvc_set_ctrl(devh, x->bUnitID, sel, b, len)) : -1;
         if (w == len) {
           expect(get_cur_ready(x->bUnitID, sel, b2, len) == len && !memcmp(b, b2, len), "XU %u/%d read-back", x->bUnitID, sel);
+          /* a SET_CUR whose wLength isn't GET_LEN must STALL (2.4.4: unexpected data length) */
+          expect(uvc_set_ctrl(devh, x->bUnitID, sel, b, len + 1) < 0, "XU %u/%d: SET_CUR of %d bytes rejected", x->bUnitID, sel, len + 1);
+          if (len > 1) expect(uvc_set_ctrl(devh, x->bUnitID, sel, b, len - 1) < 0, "XU %u/%d: SET_CUR of %d bytes rejected", x->bUnitID, sel, len - 1);
         }
       }
       free(b); free(b2);
@@ -596,6 +634,7 @@ static void mode_controls(void) {
     expect(uvc_get_ctrl_len(devh, 0xfe, 1) < 0, "len on non-existent unit fails");
     expect(uvc_set_ctrl(devh, 0xfe, 1, b, 4) < 0, "set on non-existent unit fails"); }
   printf("  units: ct=%d pu=%d su=%d xu=%d (xu controls readable: %d)\n", have_ct, have_pu, have_su, nxu, xok);
+  check_power_mode();
 }
 
 /* ================= convert ================= */

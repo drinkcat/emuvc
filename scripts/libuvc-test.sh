@@ -202,6 +202,13 @@ CHECK_RE='async_ok=[2-9] async_failed=1' run_api api-async-completion EMUVC_CONF
 CHECK_RE='button_events=2 value=[0-9]+ info=[0-9]+ failure=1 min=1 max=1 ' \
   run_api api-status-edge EMUVC_CONFIG="$CFG/status-edge.toml" -- -m 1000 status
 
+# Reshaped extension unit controls ([[device.control]]): libuvc sees the configured size and GET_INFO.
+CHECK_RE='XU 5/1 len=33 info=0x01' run_api api-xu-config EMUVC_CONFIG="$CFG/synthetic-xu.toml" -- controls
+# The power mode control through libuvc's own API, on a device that checks the value. libuvc's enum
+# uvc_device_power_mode used reserved values (0x0b/0x1b) until UVC 1.5 4.2.1.1's 0 and 1 replaced them.
+CHECK_RE='uvc_set_power_mode\(UVC_VC_VIDEO_POWER_MODE_FULL\) writes 0x00: Success' \
+  TEST_BIN=api_test run_case api-power-mode-enum pass EMUVC_CONFIG="$CFG/synthetic-default.toml" -- controls
+
 # Issue reproductions (configs/issue-*.toml) libuvc handles now: all modes, strict.
 for c in issue-193-zero-packet-alt issue-276-get-max-zero-payload issue-282-payload-changes issue-336-step-zero; do
   CHECK_RE='^RESULT mode=wrap ' run_api "api-$c" EMUVC_CONFIG="$CFG/$c.toml" $V -- -m 1500 all

@@ -321,12 +321,14 @@ fn async_controls() {
             selector: PU_BRIGHTNESS_CONTROL,
             async_ms: Some(50),
             fail: None,
+            ..Default::default()
         },
         ControlSpec {
             entity: 3,
             selector: PU_CONTRAST_CONTROL,
             async_ms: Some(10),
             fail: Some(ERR_WRONG_STATE),
+            ..Default::default()
         },
     ];
     let host = host();
@@ -459,4 +461,85 @@ fn clock_quirks() {
         "deltas {deltas:?} vs {interval_ticks}"
     );
     assert!(deltas.contains(&0), "a PTS one interval back: {deltas:?}");
+}
+
+fn vc_req(
+    host: &Host,
+    dev: DeviceId,
+    req: u8,
+    entity: u8,
+    cs: u8,
+    data: &[u8],
+    len: u16,
+) -> Result<Vec<u8>, UsbError> {
+    let rt = if req & 0x80 != 0 { 0xa1 } else { 0x21 };
+    let setup = SetupPacket::new(rt, req, (cs as u16) << 8, (entity as u16) << 8, len);
+    host.control(dev, setup, data, None)
+}
+
+/// `[[device.control]]` reshapes extension unit controls; the power mode control (4.2.1.1).
+#[test]
+fn xu_config_and_power_mode() {
+    let mut cfg = synthetic(SyntheticConfig::default());
+    cfg.controls = vec![
+        ControlSpec {
+            entity: 5,
+            selector: 1,
+            len: Some(33),
+            info: Some(INFO_GET),
+            res: Some(vec![]),
+            def: Some(vec![7; 33]),
+            ..Default::default()
+        },
+        ControlSpec {
+            entity: 5,
+            selector: 2,
+            def: Some(vec![1, 2]),
+            ..Default::default()
+        },
+    ];
+    let host = host();
+    let dev = host.attach(build(&cfg).unwrap()).unwrap().id;
+    let get = |req, sel, len| vc_req(&host, dev, req, 5, sel, &[], len);
+    assert_eq!(get(GET_LEN, 1, 2), Ok(vec![33, 0]));
+    assert_eq!(get(GET_INFO, 1, 1), Ok(vec![INFO_GET]));
+    assert_eq!(get(GET_CUR, 1, 33), Ok(vec![7; 33]), "starts at GET_DEF");
+    assert_eq!(get(GET_MAX, 1, 33), Ok(vec![0xff; 33]), "resized");
+    assert!(get(GET_RES, 1, 33).is_err());
+    assert!(
+        vc_req(&host, dev, SET_CUR, 5, 1, &[0; 33], 33).is_err(),
+        "read-only"
+    );
+    assert_eq!(request_error(&host, dev), ERR_INVALID_REQUEST);
+    assert_eq!(get(GET_CUR, 2, 2), Ok(vec![1, 2]));
+
+    // Power mode: USB powered (D5), vendor mode supported (D4), full power.
+    let pm = |data: &[u8]| vc_req(&host, dev, SET_CUR, 0, VC_VIDEO_POWER_MODE_CONTROL, data, 1);
+    let cur = || vc_req(&host, dev, GET_CUR, 0, VC_VIDEO_POWER_MODE_CONTROL, &[], 1).unwrap()[0];
+    assert_eq!(cur(), 0x30);
+    assert_eq!(pm(&[1]), Ok(vec![]));
+    assert_eq!(cur(), 0x31);
+    // libuvc's UVC_VC_VIDEO_POWER_MODE_FULL (0x0b): a reserved mode.
+    assert!(pm(&[0x0b]).is_err());
+    assert_eq!(request_error(&host, dev), ERR_OUT_OF_RANGE);
+    assert_eq!(pm(&[0]), Ok(vec![]));
+    assert_eq!(cur(), 0x30);
+
+    // Configured: battery powered, no vendor mode.
+    cfg.controls = vec![ControlSpec {
+        entity: 0,
+        selector: VC_VIDEO_POWER_MODE_CONTROL,
+        cur: Some(vec![0x40]),
+        ..Default::default()
+    }];
+    let dev = host.attach(build(&cfg).unwrap()).unwrap().id;
+    assert!(vc_req(&host, dev, SET_CUR, 0, VC_VIDEO_POWER_MODE_CONTROL, &[1], 1).is_err());
+    // Range overrides on a standard control are refused.
+    cfg.controls = vec![ControlSpec {
+        entity: 3,
+        selector: PU_BRIGHTNESS_CONTROL,
+        len: Some(4),
+        ..Default::default()
+    }];
+    assert!(build(&cfg).is_err());
 }
