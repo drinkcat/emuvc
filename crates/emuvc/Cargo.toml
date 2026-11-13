@@ -1,0 +1,17 @@
+[package]
+name = "emuvc"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "emuvc command line tool"
+
+[dependencies]
+clap = { version = "4.6.7", features = ["derive"] }
+emuvc-devices = { version = "0.1.0", path = "../emuvc-devices" }
+emuvc-usbip = { version = "0.1.0", path = "../emuvc-usbip" }
+emuvc-usb = { version = "0.1.0", path = "../emuvc-usb" }
+emuvc-uvc = { version = "0.1.0", path = "../emuvc-uvc" }
+emuvc-video = { version = "0.1.0", path = "../emuvc-video" }
+env_logger = "0.11.11"
+log.workspace = true

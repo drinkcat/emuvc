@@ -1,0 +1,371 @@
+//! The UVC function: one VideoControl interface plus its VideoStreaming
+//! interfaces, built from (parsed) descriptors.
+//!
+//! Behaviour derives from the descriptors (entities, supported controls,
+//! formats, alternate settings); device models then tune control ranges,
+//! extension unit sizes, frame sources and quirks.
+
+use std::collections::{BTreeMap, VecDeque};
+
+use log::debug;
+
+use emuvc_usb::{
+    BusTime, ControlReply, Ctx, Function, InReply, IsoReply, SetupPacket, Speed, UsbError,
+};
+use emuvc_video::FrameSource;
+
+use crate::consts::*;
+use crate::control::{self, Control, Unit};
+use crate::stream::{StreamQuirks, VsInterface};
+use crate::topology::{EntityKind, Transfer, UvcFunctionDesc, VideoControl, VideoStreaming};
+
+/// Builds a frame source for a streaming interface.
+pub type SourceFactory<'a> = &'a mut dyn FnMut(&VideoStreaming) -> Box<dyn FrameSource>;
+
+pub struct UvcFunction {
+    name: String,
+    pub vc: VideoControl,
+    controls: BTreeMap<(u8, u8), Control>,
+    request_error: u8,
+    status: VecDeque<Vec<u8>>,
+    pub vs: Vec<VsInterface>,
+}
+
+fn unit_of(kind: &EntityKind) -> Option<Unit> {
+    match kind {
+        EntityKind::Camera => Some(Unit::Camera),
+        EntityKind::Processing { .. } => Some(Unit::Processing),
+        _ => None,
+    }
+}
+
+fn tag_of(kind: &EntityKind) -> EntityKindTag {
+    match kind {
+        EntityKind::Camera
+        | EntityKind::InputTerminal { .. }
+        | EntityKind::OutputTerminal { .. } => EntityKindTag::Camera,
+        EntityKind::Processing { .. } => EntityKindTag::Processing,
+        EntityKind::Selector => EntityKindTag::Selector,
+        EntityKind::Extension { .. } => EntityKindTag::Extension,
+        EntityKind::Encoding => EntityKindTag::Encoding,
+    }
+}
+
+fn request_name(r: u8) -> &'static str {
+    match r {
+        SET_CUR => "SET_CUR",
+        GET_CUR => "GET_CUR",
+        GET_MIN => "GET_MIN",
+        GET_MAX => "GET_MAX",
+        GET_RES => "GET_RES",
+        GET_LEN => "GET_LEN",
+        GET_INFO => "GET_INFO",
+        GET_DEF => "GET_DEF",
+        _ => "?",
+    }
+}
+
+impl UvcFunction {
+    /// Creates the function with spec defaults for every advertised control.
+    /// Extension unit controls default to 4 opaque bytes.
+    pub fn new(
+        desc: UvcFunctionDesc,
+        _speed: Speed,
+        quirks: StreamQuirks,
+        sources: SourceFactory,
+    ) -> Self {
+        let UvcFunctionDesc { vc, streaming } = desc;
+        let mut controls = BTreeMap::new();
+        let (max_w, max_h) = streaming
+            .iter()
+            .flat_map(|s| s.formats.iter().flat_map(|f| f.frames.iter()))
+            .map(|f| (f.width, f.height))
+            .max_by_key(|&(w, h)| w as u32 * h as u32)
+            .unwrap_or((640, 480));
+        for e in &vc.entities {
+            match (&e.kind, unit_of(&e.kind)) {
+                (_, Some(unit)) => {
+                    for &cs in &e.controls {
+                        let c = if unit == Unit::Camera && cs == CT_REGION_OF_INTEREST_CONTROL {
+                            Some(control::region_of_interest(max_w, max_h))
+                        } else {
+                            control::standard(unit, cs)
+                        };
+                        controls.insert((e.id, cs), c.unwrap_or_else(|| Control::raw(1)));
+                    }
+                }
+                (EntityKind::Extension { .. }, _) => {
+                    for &cs in &e.controls {
+                        controls.insert((e.id, cs), Control::raw(4));
+                    }
+                }
+                (EntityKind::Selector, _) => {
+                    let n = e.sources.len().max(1) as i64;
+                    controls.insert(
+                        (e.id, SU_INPUT_SELECT_CONTROL),
+                        Control::int(1, false, 1, n, 1, 1),
+                    );
+                }
+                _ => {}
+            }
+        }
+        let vs = streaming
+            .into_iter()
+            .map(|s| {
+                let src = sources(&s);
+                VsInterface::new(s, vc.bcd_uvc, vc.clock_frequency, src, quirks.clone())
+            })
+            .collect();
+        let mut f = UvcFunction {
+            name: format!("VC{}", vc.interface),
+            vc,
+            controls,
+            request_error: 0,
+            status: VecDeque::new(),
+            vs,
+        };
+        f.update_auto_links(false);
+        f
+    }
+
+    /// All interfaces of the function (VideoControl first).
+    pub fn interfaces(&self) -> Vec<u8> {
+        let mut v = vec![self.vc.interface];
+        v.extend(self.vs.iter().map(|s| s.interface()));
+        v
+    }
+
+    pub fn control(&self, entity: u8, selector: u8) -> Option<&Control> {
+        self.controls.get(&(entity, selector))
+    }
+
+    pub fn control_mut(&mut self, entity: u8, selector: u8) -> Option<&mut Control> {
+        self.controls.get_mut(&(entity, selector))
+    }
+
+    /// Adds or replaces a control (e.g. to give an XU control its real size).
+    pub fn set_control(&mut self, entity: u8, selector: u8, c: Control) {
+        self.controls.insert((entity, selector), c);
+        self.update_auto_links(false);
+    }
+
+    /// Entity ids of the given kind (e.g. to find the processing unit).
+    pub fn entities(&self, pred: impl Fn(&EntityKind) -> bool) -> Vec<u8> {
+        self.vc
+            .entities
+            .iter()
+            .filter(|e| pred(&e.kind))
+            .map(|e| e.id)
+            .collect()
+    }
+
+    /// Changes a control's value from the device side (autoupdate, privacy
+    /// shutter...) and queues a control change interrupt.
+    pub fn device_set(&mut self, entity: u8, selector: u8, value: &[u8]) {
+        if let Some(c) = self.controls.get_mut(&(entity, selector)) {
+            c.cur = value.to_vec();
+            self.push_control_change(entity, selector, STATUS_ATTR_VALUE, value.to_vec());
+        }
+    }
+
+    /// Queues a VideoStreaming button press/release interrupt.
+    pub fn button(&mut self, interface: u8, pressed: bool) {
+        self.status.push_back(vec![
+            STATUS_ORIGINATOR_VS,
+            interface,
+            STATUS_EVENT_BUTTON_PRESS,
+            pressed as u8,
+        ]);
+    }
+
+    fn push_control_change(&mut self, entity: u8, selector: u8, attribute: u8, value: Vec<u8>) {
+        let mut p = vec![
+            STATUS_ORIGINATOR_VC,
+            entity,
+            STATUS_EVENT_CONTROL_CHANGE,
+            selector,
+            attribute,
+        ];
+        p.extend(value);
+        self.status.push_back(p);
+    }
+
+    /// Recomputes which controls are disabled by an "auto" control; with
+    /// `notify`, queues GET_INFO change interrupts for controls that flipped.
+    fn update_auto_links(&mut self, notify: bool) {
+        let mut changes = Vec::new();
+        for e in &self.vc.entities {
+            let Some(unit) = unit_of(&e.kind) else {
+                continue;
+            };
+            let mut disabled: BTreeMap<u8, bool> = BTreeMap::new();
+            for (auto, pred, deps) in control::auto_links(unit) {
+                let Some(a) = self.controls.get(&(e.id, *auto)) else {
+                    continue;
+                };
+                let on = pred(a.value());
+                for d in *deps {
+                    *disabled.entry(*d).or_default() |= on;
+                }
+            }
+            for (cs, dis) in disabled {
+                if let Some(c) = self.controls.get_mut(&(e.id, cs))
+                    && c.disabled != dis
+                {
+                    c.disabled = dis;
+                    changes.push((e.id, cs, c.info | if dis { INFO_DISABLED } else { 0 }));
+                }
+            }
+        }
+        if notify {
+            for (id, cs, info) in changes {
+                self.push_control_change(id, cs, STATUS_ATTR_INFO, vec![info]);
+            }
+        }
+    }
+
+    fn vs_mut(&mut self, iface: u8) -> Option<&mut VsInterface> {
+        self.vs.iter_mut().find(|v| v.interface() == iface)
+    }
+
+    fn vc_request(&mut self, setup: &SetupPacket, data: &[u8]) -> Result<Vec<u8>, u8> {
+        let (entity, cs, req) = (
+            (setup.index >> 8) as u8,
+            (setup.value >> 8) as u8,
+            setup.request,
+        );
+        if entity == 0 {
+            return match (cs, req) {
+                (VC_REQUEST_ERROR_CODE_CONTROL, GET_CUR) => Ok(vec![self.request_error]),
+                (VC_REQUEST_ERROR_CODE_CONTROL, GET_INFO) => Ok(vec![INFO_GET]),
+                (VC_REQUEST_ERROR_CODE_CONTROL, _) => Err(ERR_INVALID_REQUEST),
+                _ => Err(ERR_INVALID_CONTROL),
+            };
+        }
+        let Some(kind) = self.vc.entity(entity).map(|e| e.kind.clone()) else {
+            return Err(ERR_INVALID_UNIT);
+        };
+        let Some(c) = self.controls.get_mut(&(entity, cs)) else {
+            return Err(ERR_INVALID_CONTROL);
+        };
+        let r = if req == SET_CUR {
+            c.set(data).map(|_| Vec::new())
+        } else {
+            c.get(req)
+        };
+        debug!(
+            "{}: {} {}({entity}).{} {:02x?} -> {:02x?}",
+            self.name,
+            request_name(req),
+            match kind {
+                EntityKind::Camera => "CT",
+                EntityKind::Processing { .. } => "PU",
+                EntityKind::Extension { .. } => "XU",
+                EntityKind::Selector => "SU",
+                _ => "??",
+            },
+            control_name(tag_of(&kind), cs),
+            data,
+            r
+        );
+        if req == SET_CUR && r.is_ok() && unit_of(&kind).is_some() {
+            self.update_auto_links(true);
+        }
+        r
+    }
+}
+
+impl Function for UvcFunction {
+    fn control(&mut self, cx: &mut Ctx, setup: &SetupPacket, data: &[u8]) -> ControlReply {
+        if setup.request_type & 0x60 != 0x20 {
+            return ControlReply::stall();
+        }
+        let iface = setup.index as u8;
+        let r = if iface == self.vc.interface {
+            self.vc_request(setup, data)
+        } else if let Some(vs) = self.vs_mut(iface) {
+            vs.control(cx, setup.request, (setup.value >> 8) as u8, data)
+        } else {
+            Err(ERR_INVALID_UNIT)
+        };
+        match r {
+            Ok(mut d) => {
+                // Reading the error code doesn't reset it to "no error" before the reply.
+                if !(iface == self.vc.interface && setup.index >> 8 == 0) {
+                    self.request_error = ERR_NO_ERROR;
+                }
+                d.truncate(setup.length as usize);
+                ControlReply::data(d)
+            }
+            Err(code) => {
+                debug!(
+                    "{}: {:?} failed with error code {code:#04x}",
+                    self.name, setup
+                );
+                self.request_error = code;
+                ControlReply::stall()
+            }
+        }
+    }
+
+    fn set_alt(&mut self, cx: &mut Ctx, iface: u8, alt: u8) -> Result<(), UsbError> {
+        if let Some(vs) = self.vs_mut(iface) {
+            vs.set_alt(cx, alt);
+        }
+        Ok(())
+    }
+
+    fn reset(&mut self, _cx: &mut Ctx) {
+        for c in self.controls.values_mut() {
+            c.reset();
+        }
+        self.update_auto_links(false);
+        self.request_error = 0;
+        self.status.clear();
+        for vs in &mut self.vs {
+            vs.reset();
+        }
+    }
+
+    fn data_in(&mut self, cx: &mut Ctx, ep: u8, max_len: usize) -> InReply {
+        if self
+            .vc
+            .status_endpoint
+            .as_ref()
+            .is_some_and(|s| s.address == ep)
+        {
+            return match self.status.pop_front() {
+                Some(mut p) => {
+                    p.truncate(max_len);
+                    InReply::Data(p)
+                }
+                None => InReply::Nak,
+            };
+        }
+        match self.vs.iter_mut().find(|v| v.desc.endpoint == ep) {
+            Some(vs) => vs.bulk_in(cx, max_len).map_or(InReply::Nak, InReply::Data),
+            None => InReply::Error(UsbError::Stall),
+        }
+    }
+
+    fn iso_in(&mut self, cx: &mut Ctx, ep: u8, max_len: usize) -> IsoReply {
+        match self.vs.iter_mut().find(|v| v.desc.endpoint == ep) {
+            Some(vs) => IsoReply::data(vs.iso_in(cx, max_len)),
+            None => IsoReply::default(),
+        }
+    }
+
+    fn clear_halt(&mut self, _cx: &mut Ctx, ep: u8) {
+        if let Some(vs) = self.vs.iter_mut().find(|v| v.desc.endpoint == ep) {
+            vs.clear_halt();
+        }
+    }
+
+    fn next_wakeup(&self) -> Option<BusTime> {
+        self.vs
+            .iter()
+            .filter(|v| matches!(v.desc.transfer, Transfer::Bulk { .. }))
+            .filter_map(|v| v.next_wakeup())
+            .min()
+    }
+}
