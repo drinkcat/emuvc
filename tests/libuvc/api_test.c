@@ -3,7 +3,7 @@
  * usage: api_test [-d VID:PID] [-n INDEX] [-m MS] [-l] MODE...
  *   -l: lenient, failed expectations are counted as soft (fault-injection configs);
  *       crashes and hangs still fail
- *   MODE: info controls convert poll still multi status negotiate wrap all
+ *   MODE: info controls convert poll still multi status negotiate transfers wrap all
  *
  * Every mode discovers what the device offers through libuvc itself and
  * exercises the matching API; nothing is hard-coded to one device model.
@@ -21,7 +21,9 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <fcntl.h>
+#include <pthread.h>
 #include <string.h>
+#include <time.h>
 #include <unistd.h>
 
 extern void uvc_print_frameformats(uvc_device_handle_t *devh); /* exported, not in the public header */
@@ -890,6 +892,57 @@ static void mode_negotiate(void) {
   }
 }
 
+/* ================= transfers ================= */
+/* While streaming, libuvc keeps LIBUVC_NUM_TRANSFER_BUFS transfers in flight. One that completes
+ * with a status libuvc does not retry (LIBUSB_TRANSFER_ERROR: CRC, bit stuffing, missing
+ * handshake...) is freed instead of resubmitted, and its strmh->transfers[] slot cleared. Stream
+ * for a while and count them: a stream that loses all its transfers stops, without an error. */
+static int live_transfers(uvc_stream_handle_t *s) {
+  int n = 0;
+  pthread_mutex_lock(&s->cb_mutex);
+  for (int i = 0; i < LIBUVC_NUM_TRANSFER_BUFS; i++) n += s->transfers[i] != NULL;
+  pthread_mutex_unlock(&s->cb_mutex);
+  return n;
+}
+
+static long now_ms(void) {
+  struct timespec t;
+  clock_gettime(CLOCK_MONOTONIC, &t);
+  return t.tv_sec * 1000L + t.tv_nsec / 1000000;
+}
+
+static void mode_transfers(void) {
+  enum { FRAMES = 90, STALL_MS = 2000 };
+  expect(open_device() == 0, "open device");
+  if (!devh) return;
+  const uvc_format_desc_t *f = uvc_get_format_descs(devh);
+  const uvc_frame_desc_t *fr = f ? smallest_frame(f) : NULL;
+  if (!fr) { expect(0, "no format"); return; }
+  uvc_stream_ctrl_t c;
+  uvc_stream_handle_t *s = NULL;
+  expect(ctrl_for(f, fr, default_interval(fr), &c) == UVC_SUCCESS, "negotiate");
+  if (uvc_stream_open_ctrl(devh, &s, &c) != UVC_SUCCESS) { expect(0, "stream open"); return; }
+  cb_frames = 0;
+  if (uvc_stream_start(s, count_cb, NULL, 0) != UVC_SUCCESS) { expect(0, "stream start"); uvc_stream_close(s); return; }
+  int start = live_transfers(s), shown = start, last = 0;
+  long t0 = now_ms(), last_frame = t0, now = t0;
+  printf("  %d transfers in flight\n", start);
+  while (cb_frames < FRAMES && now - last_frame < STALL_MS) {
+    usleep(5000);
+    now = now_ms();
+    int n = live_transfers(s), frames = cb_frames;
+    if (frames != last) { last = frames; last_frame = now; }
+    if (n / 10 != shown / 10) { printf("  %5.2f s: %3d left, %d frames\n", (now - t0) / 1000.0, n, frames); shown = n; }
+  }
+  int end = live_transfers(s);
+  if (cb_frames < FRAMES)
+    printf("  stalled: no frame for %d ms after %d frames, %d of %d transfers left\n", STALL_MS, cb_frames, end, start);
+  expect(cb_frames >= FRAMES, "frames keep coming (%d of %d)", cb_frames, FRAMES);
+  expect(end == start, "no transfer lost (%d of %d left)", end, start);
+  uvc_stream_stop(s);
+  uvc_stream_close(s);
+}
+
 /* ================= wrap ================= */
 /* uvc_wrap() on a descriptor of a system device (the shim ignores the fd and wraps an emulated device). */
 static void mode_wrap(void) {
@@ -928,11 +981,12 @@ static void mode_wrap(void) {
 typedef void (*mode_fn)(void);
 static const struct { const char *name; mode_fn fn; } MODES[] = {
   {"info", mode_info}, {"controls", mode_controls}, {"convert", mode_convert}, {"poll", mode_poll},
-  {"still", mode_still}, {"multi", mode_multi}, {"status", mode_status}, {"negotiate", mode_negotiate}, {"wrap", mode_wrap},
+  {"still", mode_still}, {"multi", mode_multi}, {"status", mode_status}, {"negotiate", mode_negotiate},
+  {"transfers", mode_transfers}, {"wrap", mode_wrap},
 };
 
 static void usage(void) {
-  fprintf(stderr, "usage: api_test [-d VID:PID] [-n INDEX] [-m STATUS_WAIT_MS] [-l] MODE...\n  modes: info controls convert poll still multi status negotiate wrap all\n");
+  fprintf(stderr, "usage: api_test [-d VID:PID] [-n INDEX] [-m STATUS_WAIT_MS] [-l] MODE...\n  modes: info controls convert poll still multi status negotiate transfers wrap all\n");
 }
 
 int main(int argc, char **argv) {
