@@ -17,7 +17,8 @@ Runs libuvc (built out of tree, never modified) against the emuvc libusb shim
   `--controls` exercises brightness/AE mode; `--list` lists devices; `--fps-tol PCT` checks the rate;
   `--max-gaps N` tolerates N skipped frames (`--allow-gaps`: any number).
 * `configs/*.toml` are emulator configs for the fault/quirk cases. `info` cases
-  (zero-max-payload, stall-get-def) only report an outcome and never fail the suite.
+  (zero-max-payload) only report an outcome and never fail the suite. `EXPECT_RC=N` makes a
+  `pass` case expect exit N, for checked failures (stall-get-def: libuvc must report PIPE).
 
 ## API coverage (`api_test.c`) and `scripts/libuvc-coverage.sh`
 

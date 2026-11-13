@@ -84,6 +84,7 @@ TMP="$(mktemp)"; trap 'rm -f "$TMP"' EXIT
 # run_case NAME EXPECT [VAR=val ...] -- stream_test args...
 #   EXPECT: pass  = must exit 0;  info = report outcome only, never fails the suite
 #   Extra checks on output can be done by the caller via CHECK_RE (grep -E on output).
+#   EXPECT_RC=N: a pass case must exit N instead of 0 (an expected, checked failure).
 run_case() {
   local name=$1 expect=$2; shift 2
   local envs=()
@@ -95,7 +96,7 @@ run_case() {
   # device drops from host drops when a case fails.
   env LD_PRELOAD="$SHIM" EMUVC_LOG="${EMUVC_LOG:-emuvc_uvc::stream=info}" "${envs[@]}" timeout 60 "$OUT/${TEST_BIN:-stream_test}" "$@" >"$TMP" 2>&1 || rc=$?
   local secs=$((SECONDS - t0)) ok=1
-  [ $rc -eq 0 ] || ok=0
+  [ $rc -eq "${EXPECT_RC:-0}" ] || ok=0
   if [ -n "${CHECK_RE:-}" ] && ! grep -Eq "$CHECK_RE" "$TMP"; then ok=0; echo "(missing output /$CHECK_RE/)" >>"$TMP"; fi
   local summary; summary=$({ grep -E '^RESULT|^devices:' "$TMP" || true; } | tr '\n' ' ')
   if [ "$expect" = info ]; then
@@ -109,10 +110,10 @@ run_case() {
   fi
   if [ $VERBOSE = 1 ]; then sed 's/^/    | /' "$TMP"
   elif [ "$expect" = pass ] && [ $ok = 0 ]; then tail -15 "$TMP" | sed 's/^/    | /'
-  elif [ "$expect" = info ] && [ "${INFO_LINES:-4}" != 0 ]; then { grep -vE '^RESULT' "$TMP" || true; } | { if [ "$name" = stall-get-def ]; then grep -E 'FAIL|GET_DEF'; else cat; fi; } | tail -${INFO_LINES:-4} | sed 's/^/    | /'; fi
-  CHECK_RE=""; return 0
+  elif [ "$expect" = info ] && [ "${INFO_LINES:-4}" != 0 ]; then { grep -vE '^RESULT' "$TMP" || true; } | tail -"${INFO_LINES:-4}" | sed 's/^/    | /'; fi
+  CHECK_RE=""; EXPECT_RC=""; return 0
 }
-CHECK_RE=""
+CHECK_RE=""; EXPECT_RC=""
 
 D=EMUVC_DEVICE=luxvisions-30c9-0052
 V=EMUVC_CLOCK=virtual
@@ -126,7 +127,8 @@ CHECK_RE='devices: 2' run_case two-devices pass EMUVC_DEVICE=luxvisions-30c9-005
 run_case iso-errors pass EMUVC_CONFIG="$CFG/iso-errors.toml" -- -f mjpeg -s 640x480 -r 30 -n 60 -t 20 --allow-gaps --allow-corrupt
 run_case zero-max-payload info EMUVC_CONFIG="$CFG/zero-max-payload.toml" -- -f yuyv -s 640x480 -r 30 -n 30 -t 10
 run_case no-eof pass EMUVC_CONFIG="$CFG/no-eof.toml" -- -f yuyv -s 640x480 -r 30 -n 30 -t 15
-INFO_LINES=40 run_case stall-get-def info EMUVC_CONFIG="$CFG/stall-get-def.toml" -- --controls
+# GET_DEF(brightness) stalls: libuvc must report PIPE for it (a failed check, so stream_test exits 1).
+EXPECT_RC=1 CHECK_RE='FAIL brightness GET_DEF = .*\(Pipe\)' run_case stall-get-def pass EMUVC_CONFIG="$CFG/stall-get-def.toml" -- --controls
 
 # api_test: public API coverage (see tests/libuvc/api_test.c); modes adapt to the device.
 # run_api NAME [VAR=val ...] -- api_test args...  (failure = crash/hang/inconsistent data)
