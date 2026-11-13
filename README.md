@@ -1,10 +1,14 @@
+<p align="center"><img src="docs/logo.svg" alt="emuvc logo" width="256"></p>
+
 # emuvc
 
-USB Video Class camera emulator, for testing libuvc and other UVC hosts
-without the hardware. Devices are built from real descriptors and behave
-dynamically: probe/commit negotiation, controls with real ranges, timed
-isochronous/bulk streaming of stamped test frames, status interrupts — plus
-configurable faults (USB errors, stalls, timeouts, disconnects, UVC quirks).
+An **emu**lator for **U**SB **V**ideo **C**lass cameras, for testing libuvc
+and other UVC hosts without the hardware.
+
+Devices are built from real descriptors and behave dynamically: probe/commit
+negotiation, controls with real ranges, timed isochronous/bulk streaming of
+stamped test frames, status interrupts — plus configurable faults (USB errors,
+stalls, timeouts, disconnects, UVC quirks).
 
 The first model is a laptop webcam (Luxvisions 30c9:0052: UVC 1.5, MJPEG and
 YUY2 up to 1080p plus an IR function), reproduced byte for byte.
