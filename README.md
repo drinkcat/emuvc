@@ -61,6 +61,10 @@ uvc = { no_eof = true }                  # UVC quirks: see StreamQuirks
 on = { iso_in = { ep = 0x81 } }
 action = { error = "protocol" }
 probability = 0.01
+
+[[device.patch]]                         # malformed descriptors: see emuvc_devices::patch
+target = { iface = "vs", subtype = 0x06 }
+set = [[4, 4]]                           # first MJPEG format: bNumFrameDescriptors = 4
 ```
 
 ## Layout

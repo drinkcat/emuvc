@@ -1,0 +1,8 @@
+# Synthetic camera whose first MJPEG frame descriptor claims 4 discrete frame intervals
+# (bFrameIntervalType) while bLength only holds 3. Hosts must bound the interval list by bLength.
+[[device]]
+model = "synthetic"
+
+[[device.patch]]
+target = { iface = "vs", subtype = 0x07 }  # first VS_FRAME_MJPEG
+set = [[25, 4]]                            # bFrameIntervalType

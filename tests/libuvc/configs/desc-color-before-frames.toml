@@ -1,0 +1,8 @@
+# Synthetic camera whose MJPEG color matching descriptor comes before the frame descriptors
+# instead of after them. Hosts must attach it to the format and still see all of its frames.
+[[device]]
+model = "synthetic"
+
+[[device.patch]]
+target = { iface = "vs", subtype = 0x0d }  # VS_COLORFORMAT of the MJPEG format
+move_before = { iface = "vs", subtype = 0x07 }  # first VS_FRAME_MJPEG

@@ -160,6 +160,11 @@ for c in "$CFG"/synthetic-*.toml; do
   CHECK_RE='^RESULT mode=wrap ' run_api "api-$n" EMUVC_CONFIG="$c" $V -- -m 1500 all
 done
 
+# Malformed descriptors (configs/desc-*.toml, emuvc_devices::patch) the host must cope with: all modes, strict.
+for c in desc-unknown-vs-subtype desc-color-before-frames desc-num-frames-over desc-duplicate-frame; do
+  CHECK_RE='^RESULT mode=wrap ' run_api "api-$c" EMUVC_CONFIG="$CFG/$c.toml" $V -- -m 1500 all
+done
+
 # Issue reproductions: libuvc is expected to fail on some of these, so every mode runs in its own
 # process and only the outcome is reported (rc=139/136 = libuvc crashed, a finding, never a hang).
 API_MODES="info controls convert poll still multi status negotiate wrap"
@@ -172,6 +177,9 @@ run_api_each() { # NAME [VAR=val ...] -- (modes run one by one)
 for c in "$CFG"/issue-*.toml; do
   run_api_each "api-$(basename "$c" .toml)" EMUVC_CONFIG="$c" $V
 done
+# finding: libuvc rejects the whole device (UVC_ERROR_INVALID_DEVICE) when one frame descriptor's
+# interval list overruns its bLength: safe, but every other format becomes unusable too
+run_api_each api-desc-interval-count-over EMUVC_CONFIG="$CFG/desc-interval-count-over.toml" $V
 
 # Shim-level libusb failures (EMUVC_LIBUSB_FAIL): libuvc's error paths must neither crash nor hang.
 # FAULT[:mode] ; default mode is every mode in one process (lenient).
