@@ -309,6 +309,175 @@ static const enum uvc_req_code REQS[] = {UVC_GET_CUR, UVC_GET_MIN, UVC_GET_MAX, 
       soft(uvc_set_##name(devh, v)); /* may legitimately fail (read-only, auto mode) */ \
     } else soft(uvc_set_##name(devh, 0)); } while (0)
 
+/* ---- spec rules for controls, derived from what the device reports (UVC 1.5 4.1.2, 4.2) ---- */
+#define VC_REQUEST_ERROR_CODE_CONTROL 0x02
+enum { INFO_GET = 1, INFO_SET = 2, INFO_DISABLED = 4, INFO_AUTOUPDATE = 8, INFO_ASYNC = 16 };
+enum { ERR_WRONG_STATE = 0x02, ERR_OUT_OF_RANGE = 0x04, ERR_INVALID_VALUE_WITHIN_RANGE = 0x08 };
+
+/* bRequestErrorCode for the last request, or -1 when the device has no such control. */
+static int req_error(void) {
+  uint8_t e = 0;
+  return uvc_get_ctrl(devh, 0, VC_REQUEST_ERROR_CODE_CONTROL, &e, 1, UVC_GET_CUR) == 1 ? e : -1;
+}
+
+/* r: uvc_set_ctrl result for a SET_CUR the device must STALL, with error code `code`. */
+static void expect_rejected(int r, int code, const char *what, uint8_t unit, uint8_t sel) {
+  expect(r < 0, "%u/%u: %s rejected (got %d)", unit, sel, what, r);
+  if (r >= 0) return;
+  int e = req_error();
+  if (e < 0) soft(e);
+  else expect(e == code, "%u/%u: %s: error code %d, want %d", unit, sel, what, e, code);
+}
+
+static int ctrl_info(uint8_t unit, uint8_t sel) {
+  uint8_t i = 0;
+  return uvc_get_ctrl(devh, unit, sel, &i, 1, UVC_GET_INFO) == 1 ? i : -1;
+}
+
+static int64_t le_get(const uint8_t *b, int len, int sgn) {
+  uint64_t v = 0;
+  for (int i = len - 1; i >= 0; i--) v = v << 8 | b[i];
+  if (sgn && len < 8 && (v >> (8 * len - 1)) & 1) v |= ~0ull << (8 * len);
+  return (int64_t)v;
+}
+static void le_put(uint8_t *b, int len, int64_t v) { for (int i = 0; i < len; i++) b[i] = (uint8_t)(v >> (8 * i)); }
+
+/* Single-field controls: 1 = camera terminal, 0 = processing unit; signedness. */
+static const struct { uint8_t ct, sel, sgn; } SCALARS[] = {
+  {1, UVC_CT_SCANNING_MODE_CONTROL, 0}, {1, UVC_CT_AE_PRIORITY_CONTROL, 0}, {1, UVC_CT_EXPOSURE_TIME_ABSOLUTE_CONTROL, 0},
+  {1, UVC_CT_FOCUS_ABSOLUTE_CONTROL, 0}, {1, UVC_CT_FOCUS_AUTO_CONTROL, 0}, {1, UVC_CT_IRIS_ABSOLUTE_CONTROL, 0},
+  {1, UVC_CT_ZOOM_ABSOLUTE_CONTROL, 0}, {1, UVC_CT_ROLL_ABSOLUTE_CONTROL, 1}, {1, UVC_CT_FOCUS_SIMPLE_CONTROL, 0},
+  {0, UVC_PU_BACKLIGHT_COMPENSATION_CONTROL, 0}, {0, UVC_PU_BRIGHTNESS_CONTROL, 1}, {0, UVC_PU_CONTRAST_CONTROL, 0},
+  {0, UVC_PU_GAIN_CONTROL, 0}, {0, UVC_PU_POWER_LINE_FREQUENCY_CONTROL, 0}, {0, UVC_PU_HUE_CONTROL, 1},
+  {0, UVC_PU_SATURATION_CONTROL, 0}, {0, UVC_PU_SHARPNESS_CONTROL, 0}, {0, UVC_PU_GAMMA_CONTROL, 0},
+  {0, UVC_PU_WHITE_BALANCE_TEMPERATURE_CONTROL, 0}, {0, UVC_PU_WHITE_BALANCE_TEMPERATURE_AUTO_CONTROL, 0},
+  {0, UVC_PU_WHITE_BALANCE_COMPONENT_AUTO_CONTROL, 0}, {0, UVC_PU_DIGITAL_MULTIPLIER_CONTROL, 0},
+  {0, UVC_PU_DIGITAL_MULTIPLIER_LIMIT_CONTROL, 0}, {0, UVC_PU_HUE_AUTO_CONTROL, 0}, {0, UVC_PU_CONTRAST_AUTO_CONTROL, 0},
+};
+
+/* GET_INFO, then for a settable control: STALL "wrong state" while disabled by an auto mode,
+ * otherwise "out of range" outside [GET_MIN, GET_MAX], "invalid value within range" off the
+ * GET_RES grid, and MIN / the last grid step / the old value accepted and read back. */
+static void check_scalar(uint8_t unit, uint8_t sel, int sgn) {
+  int len = uvc_get_ctrl_len(devh, unit, sel);
+  expect(len == 1 || len == 2 || len == 4, "%u/%u: GET_LEN %d", unit, sel, len);
+  if (len != 1 && len != 2 && len != 4) return;
+  int info = ctrl_info(unit, sel);
+  expect(info >= 0 && (info & INFO_GET), "%u/%u: GET_INFO 0x%x supports GET", unit, sel, info);
+  uint8_t cur[4], mn[4], mx[4], rs[4], b[4];
+  if (info < 0 || !(info & INFO_SET) || (info & INFO_ASYNC)) return;
+  if (uvc_get_ctrl(devh, unit, sel, cur, len, UVC_GET_CUR) != len) { expect(0, "%u/%u: GET_CUR", unit, sel); return; }
+  if (info & INFO_DISABLED) {
+    expect_rejected(uvc_set_ctrl(devh, unit, sel, cur, len), ERR_WRONG_STATE, "SET_CUR while disabled", unit, sel);
+    return;
+  }
+  /* MIN/MAX/RES are optional for some controls (scanning mode, AE priority, ...) */
+  if (uvc_get_ctrl(devh, unit, sel, mn, len, UVC_GET_MIN) != len || uvc_get_ctrl(devh, unit, sel, mx, len, UVC_GET_MAX) != len) {
+    expect(uvc_set_ctrl(devh, unit, sel, cur, len) == len, "%u/%u: SET_CUR of GET_CUR", unit, sel);
+    return;
+  }
+  int64_t lo = le_get(mn, len, sgn), hi = le_get(mx, len, sgn), res = 1;
+  if (uvc_get_ctrl(devh, unit, sel, rs, len, UVC_GET_RES) == len && le_get(rs, len, 0) > 0) res = le_get(rs, len, 0);
+  int64_t tmin = sgn ? -(1ll << (8 * len - 1)) : 0, tmax = sgn ? (1ll << (8 * len - 1)) - 1 : (1ll << (8 * len)) - 1;
+  expect(lo <= hi, "%u/%u: GET_MIN %lld <= GET_MAX %lld", unit, sel, (long long)lo, (long long)hi);
+  if (lo > hi) return;
+  if (hi < tmax) { le_put(b, len, hi + 1); expect_rejected(uvc_set_ctrl(devh, unit, sel, b, len), ERR_OUT_OF_RANGE, "SET_CUR above GET_MAX", unit, sel); }
+  if (lo > tmin) { le_put(b, len, lo - 1); expect_rejected(uvc_set_ctrl(devh, unit, sel, b, len), ERR_OUT_OF_RANGE, "SET_CUR below GET_MIN", unit, sel); }
+  if (res > 1 && lo + 1 < hi) {
+    le_put(b, len, lo + 1);
+    expect_rejected(uvc_set_ctrl(devh, unit, sel, b, len), ERR_INVALID_VALUE_WITHIN_RANGE, "SET_CUR off the GET_RES grid", unit, sel);
+  }
+  int64_t vals[2] = {lo, lo + (hi - lo) / res * res};
+  for (int i = 0; i < 2; i++) {
+    le_put(b, len, vals[i]);
+    expect(uvc_set_ctrl(devh, unit, sel, b, len) == len, "%u/%u: SET_CUR %lld accepted", unit, sel, (long long)vals[i]);
+    expect(uvc_get_ctrl(devh, unit, sel, b, len, UVC_GET_CUR) == len && le_get(b, len, sgn) == vals[i],
+           "%u/%u: read-back %lld", unit, sel, (long long)vals[i]);
+  }
+  expect(uvc_set_ctrl(devh, unit, sel, cur, len) == len, "%u/%u: restore", unit, sel);
+}
+
+/* GET_INFO "disabled" of `dep` must follow `disabled`; SET_CUR of its current value is rejected
+ * with "wrong state" while disabled and accepted otherwise. */
+static void expect_dep_state(uint8_t unit, uint8_t dep, int disabled, const char *why) {
+  int info = ctrl_info(unit, dep);
+  expect(info >= 0 && !!(info & INFO_DISABLED) == disabled, "%u/%u: GET_INFO 0x%x %s disabled (%s)", unit, dep, info,
+         disabled ? "is" : "is not", why);
+  int len = uvc_get_ctrl_len(devh, unit, dep);
+  uint8_t b[64];
+  if (len <= 0 || len > (int)sizeof b || uvc_get_ctrl(devh, unit, dep, b, len, UVC_GET_CUR) != len) { expect(0, "%u/%u: GET_CUR", unit, dep); return; }
+  int r = uvc_set_ctrl(devh, unit, dep, b, len);
+  if (disabled) expect_rejected(r, ERR_WRONG_STATE, why, unit, dep);
+  else expect(r == len, "%u/%u: SET_CUR accepted (%s)", unit, dep, why);
+}
+
+/* bmControls bit order differs from selector order, so ask the device: unsupported controls STALL. */
+static int has_ctrl(uint8_t unit, uint8_t sel) { return ctrl_info(unit, sel) >= 0; }
+
+/* "Auto" switches disable their manual controls (4.2.2.1.2-4.2.2.3.x). */
+static void check_auto_links(const uvc_input_terminal_t *ct, const uvc_processing_unit_t *pu) {
+  static const struct { uint8_t ct, autosel, dep; } LINKS[] = {
+    {1, UVC_CT_FOCUS_AUTO_CONTROL, UVC_CT_FOCUS_ABSOLUTE_CONTROL},
+    {0, UVC_PU_WHITE_BALANCE_TEMPERATURE_AUTO_CONTROL, UVC_PU_WHITE_BALANCE_TEMPERATURE_CONTROL},
+    {0, UVC_PU_WHITE_BALANCE_COMPONENT_AUTO_CONTROL, UVC_PU_WHITE_BALANCE_COMPONENT_CONTROL},
+    {0, UVC_PU_HUE_AUTO_CONTROL, UVC_PU_HUE_CONTROL},
+    {0, UVC_PU_CONTRAST_AUTO_CONTROL, UVC_PU_CONTRAST_CONTROL},
+  };
+  int nlinks = 0;
+  for (unsigned i = 0; i < sizeof LINKS / sizeof *LINKS; i++) {
+    if (LINKS[i].ct ? !ct : !pu) continue;
+    uint8_t unit = LINKS[i].ct ? ct->bTerminalID : pu->bUnitID;
+    uint8_t a = LINKS[i].autosel, old = 0, v;
+    if (!has_ctrl(unit, a) || !has_ctrl(unit, LINKS[i].dep)) continue;
+    int info = ctrl_info(unit, a);
+    if (info < 0 || !(info & INFO_SET) || uvc_get_ctrl(devh, unit, a, &old, 1, UVC_GET_CUR) != 1) continue;
+    nlinks++;
+    v = 1; expect(uvc_set_ctrl(devh, unit, a, &v, 1) == 1, "%u/%u: auto on", unit, a);
+    expect_dep_state(unit, LINKS[i].dep, 1, "auto on");
+    v = 0; expect(uvc_set_ctrl(devh, unit, a, &v, 1) == 1, "%u/%u: auto off", unit, a);
+    expect_dep_state(unit, LINKS[i].dep, 0, "auto off");
+    expect(uvc_set_ctrl(devh, unit, a, &old, 1) == 1, "%u/%u: restore", unit, a);
+  }
+  /* AE mode: GET_RES is the bitmap of supported modes (1 manual, 2 auto, 4 shutter priority,
+   * 8 aperture priority); exposure time is automatic in 2/8, the iris in 2/4. */
+  uint8_t old, modes, ae = UVC_CT_AE_MODE_CONTROL;
+  if (ct && has_ctrl(ct->bTerminalID, ae) && uvc_get_ctrl(devh, ct->bTerminalID, ae, &old, 1, UVC_GET_CUR) == 1 &&
+      uvc_get_ctrl(devh, ct->bTerminalID, ae, &modes, 1, UVC_GET_RES) == 1) {
+    uint8_t unit = ct->bTerminalID;
+    expect(modes != 0, "AE mode: GET_RES lists modes");
+    for (uint8_t m = 1; m <= 8; m <<= 1) {
+      if (!(modes & m)) continue;
+      uint8_t got = 0;
+      nlinks++;
+      expect(uvc_set_ctrl(devh, unit, ae, &m, 1) == 1, "AE mode %u accepted", m);
+      expect(uvc_get_ctrl(devh, unit, ae, &got, 1, UVC_GET_CUR) == 1 && got == m, "AE mode %u read-back %u", m, got);
+      if (has_ctrl(unit, UVC_CT_EXPOSURE_TIME_ABSOLUTE_CONTROL))
+        expect_dep_state(unit, UVC_CT_EXPOSURE_TIME_ABSOLUTE_CONTROL, !!(m & 0x0a), "AE mode");
+      if (has_ctrl(unit, UVC_CT_IRIS_ABSOLUTE_CONTROL))
+        expect_dep_state(unit, UVC_CT_IRIS_ABSOLUTE_CONTROL, !!(m & 0x06), "AE mode");
+    }
+    uint8_t bad = (uint8_t)(~modes & 0x0f & -(~modes & 0x0f)); /* lowest unsupported mode bit */
+    if (bad) expect_rejected(uvc_set_ctrl(devh, unit, ae, &bad, 1), ERR_OUT_OF_RANGE, "unsupported AE mode", unit, ae);
+    expect(uvc_set_ctrl(devh, unit, ae, &old, 1) == 1, "AE mode restore");
+  }
+  printf("  auto/manual links checked: %d\n", nlinks);
+}
+
+static void check_control_rules(void) {
+  const uvc_input_terminal_t *ct = uvc_get_camera_terminal(devh);
+  const uvc_processing_unit_t *pu = uvc_get_processing_units(devh);
+  int n = 0;
+  for (unsigned i = 0; i < sizeof SCALARS / sizeof *SCALARS; i++) {
+    if (SCALARS[i].ct ? !ct : !pu) continue;
+    uint8_t unit = SCALARS[i].ct ? ct->bTerminalID : pu->bUnitID;
+    if (!has_ctrl(unit, SCALARS[i].sel)) continue;
+    check_scalar(unit, SCALARS[i].sel, SCALARS[i].sgn);
+    n++;
+  }
+  printf("  scalar controls checked: %d (request error code control: %s)\n", n, req_error() >= 0 ? "yes" : "no");
+  check_auto_links(ct, pu);
+}
+
 static void mode_controls(void) {
   expect(open_device() == 0, "open device");
   if (!devh) return;
@@ -388,6 +557,7 @@ static void mode_controls(void) {
     }
   }
   if (have_su) SIMPLE(input_select, uint8_t);
+  check_control_rules();
 
   /* generic extension-unit access */
   int nxu = 0, xok = 0;
@@ -687,6 +857,53 @@ static void mode_poll(void) {
 }
 
 /* ================= still ================= */
+/* Method 2: after the trigger, one frame in the stream is the still image (2.4.2.4). libuvc
+ * delivers it like a video frame, cut at the video dwMaxVideoFrameSize. So stream an
+ * uncompressed frame size larger than the smallest still size: the still then shows up as one
+ * frame of exactly the still's byte count. */
+static void check_still_frame(void) {
+  for (const uvc_format_desc_t *f = uvc_get_format_descs(devh); f; f = f->next) {
+    if (f->bDescriptorSubtype != UVC_VS_FORMAT_UNCOMPRESSED || !f->bBitsPerPixel || !f->still_frame_desc) continue;
+    const uvc_still_frame_res_t *s = NULL;
+    for (const uvc_still_frame_res_t *r = f->still_frame_desc->imageSizePatterns; r; r = r->next)
+      if (!s || (uint32_t)r->wWidth * r->wHeight < (uint32_t)s->wWidth * s->wHeight) s = r;
+    if (!s) continue;
+    size_t still_bytes = (size_t)s->wWidth * s->wHeight * f->bBitsPerPixel / 8;
+    const uvc_frame_desc_t *fr = NULL;
+    for (const uvc_frame_desc_t *x = f->frame_descs; x; x = x->next)
+      if ((size_t)x->wWidth * x->wHeight * f->bBitsPerPixel / 8 > still_bytes &&
+          (!fr || (uint32_t)x->wWidth * x->wHeight < (uint32_t)fr->wWidth * fr->wHeight)) fr = x;
+    if (!fr) continue;
+    size_t video_bytes = (size_t)fr->wWidth * fr->wHeight * f->bBitsPerPixel / 8;
+    uvc_stream_ctrl_t c; uvc_still_ctrl_t sc; uvc_stream_handle_t *st;
+    memset(&sc, 0, sizeof sc);
+    if (soft(ctrl_for(f, fr, default_interval(fr), &c)) < 0) return;
+    expect(uvc_get_still_ctrl_format_size(devh, &c, &sc, s->wWidth, s->wHeight) == UVC_SUCCESS, "still %ux%u negotiated", s->wWidth, s->wHeight);
+    if (soft(uvc_stream_open_ctrl(devh, &st, &c)) < 0) return;
+    int got_still = 0, video_after = 0;
+    if (soft(uvc_stream_start(st, NULL, NULL, 0)) >= 0) {
+      uvc_frame_t *fp = NULL;
+      uvc_stream_get_frame(st, &fp, 2000000);
+      uvc_error_t te = uvc_trigger_still(devh, &sc);
+      expect(te == UVC_SUCCESS, "trigger still: %s", uvc_strerror(te));
+      if (te == UVC_SUCCESS)
+        for (int i = 0; i < 10 && !(got_still && video_after); i++) {
+          fp = NULL;
+          if (uvc_stream_get_frame(st, &fp, 1000000) != UVC_SUCCESS || !fp) continue;
+          if (fp->data_bytes == still_bytes) got_still++;
+          else if (got_still && fp->data_bytes == video_bytes) video_after = 1;
+        }
+      uvc_stream_stop(st);
+    }
+    uvc_stream_close(st);
+    printf("  still frame: format %u video %ux%u still %ux%u: still frames=%d\n", f->bFormatIndex, fr->wWidth, fr->wHeight,
+           s->wWidth, s->wHeight, got_still);
+    expect(got_still == 1, "exactly one still frame of %zu bytes (got %d)", still_bytes, got_still);
+    expect(video_after, "video frames of %zu bytes resume after the still", video_bytes);
+    return;
+  }
+}
+
 static void mode_still(void) {
   expect(open_device() == 0, "open device");
   if (!devh) return;
@@ -729,6 +946,7 @@ static void mode_still(void) {
     }
     printf("  still capture: not supported\n");
   }
+  if (supported) check_still_frame();
   printf("RESULT_EXTRA still_supported=%d\n", supported);
 }
 
