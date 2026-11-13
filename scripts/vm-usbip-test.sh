@@ -7,5 +7,5 @@ ROOT=$(cd "$(dirname "$0")/.." && pwd)
 cd "$ROOT"
 cargo build -q -p emuvc
 # Build libuvc + stream_test (runs no case).
-[ -x target/libuvc-test/stream_test ] || scripts/libuvc-test.sh -k '^$' >/dev/null
+[ -x target/libuvc-build/tests/stream_test ] || scripts/libuvc-test.sh -k '^$' >/dev/null
 exec scripts/vm-run.sh -t 180 -- "$ROOT/scripts/vm/usbip-guest.sh"

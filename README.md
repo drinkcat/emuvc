@@ -19,10 +19,12 @@ target/debug/emuvc run -- lsusb -v -d 30c9:0052
 target/debug/emuvc run -- ../libuvc/build/example
 # (same as LD_PRELOAD=target/debug/libemuvc_libusb.so <program>)
 
-target/debug/emuvc models               # device catalogue
+target/debug/emuvc models               # device catalogue (incl. "synthetic", "lsusb")
+target/debug/emuvc run -d lsusb:bug-report.txt -- ./app   # emulate a camera from `lsusb -v` text
 target/debug/emuvc selftest             # stream every format/frame in-process, check frames
 scripts/libuvc-test.sh                  # libuvc end-to-end suite (builds ../libuvc out of tree)
 scripts/vm-usbip-test.sh                # USB/IP vs the real kernel (uvcvideo, libusb), in a throwaway VM
+scripts/libuvc-coverage.sh              # libuvc coverage of the suite (gcov)
 cargo test
 ```
 

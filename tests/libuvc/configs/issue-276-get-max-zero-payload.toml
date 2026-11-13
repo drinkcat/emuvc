@@ -1,0 +1,4 @@
+# libuvc #276: GET_MAX(PROBE) reports dwMaxPayloadTransferSize 0.
+[[device]]
+model = "luxvisions-30c9-0052"
+uvc = { probe_max = { max_payload_transfer_size = 0 } }

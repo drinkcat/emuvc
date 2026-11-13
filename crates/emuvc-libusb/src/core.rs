@@ -79,7 +79,9 @@ pub fn bus() -> Result<&'static Bus, c_int> {
 
 pub struct Context {
     pub bus: &'static Bus,
-    pub events: Events,
+    /// Shared with the completion callbacks of in-flight URBs, which may
+    /// outlive the context (libusb_exit with transfers still pending).
+    pub events: Arc<Events>,
     devices: Mutex<HashMap<DeviceId, usize>>,
     debug: AtomicI32,
 }
@@ -170,7 +172,7 @@ unsafe fn new_context() -> Result<*mut Context, c_int> {
     let bus = bus()?;
     let ctx = Box::new(Context {
         bus,
-        events: Events::default(),
+        events: Arc::new(Events::default()),
         devices: Mutex::new(HashMap::new()),
         debug: AtomicI32::new(0),
     });
@@ -188,6 +190,9 @@ pub unsafe extern "C" fn libusb_init_context(
     _options: *const libusb_init_option,
     _num_options: c_int,
 ) -> c_int {
+    if let Some(e) = crate::faults::check("init_context") {
+        return e;
+    }
     unsafe {
         if ctx.is_null() {
             let mut d = DEFAULT_CTX.lock().unwrap();
@@ -212,6 +217,7 @@ pub unsafe extern "C" fn libusb_init_context(
 
 unsafe fn destroy_context(p: *mut Context) {
     let ctx = unsafe { Box::from_raw(p) };
+    ctx.events.close();
     for (_, d) in ctx.devices.lock().unwrap().drain() {
         unsafe { libusb_unref_device(d as *mut libusb_device) };
     }
@@ -278,6 +284,9 @@ pub unsafe extern "C" fn libusb_get_device_list(
     ctx: *mut libusb_context,
     list: *mut *mut *mut libusb_device,
 ) -> isize {
+    if let Some(e) = crate::faults::check("get_device_list") {
+        return e as isize;
+    }
     let Some(c) = (unsafe { ctx_ref(ctx) }) else {
         return LIBUSB_ERROR_INVALID_PARAM as isize;
     };
@@ -357,6 +366,9 @@ pub unsafe extern "C" fn libusb_get_device_descriptor(
     dev: *mut libusb_device,
     desc: *mut libusb_device_descriptor,
 ) -> c_int {
+    if let Some(e) = crate::faults::check("get_device_descriptor") {
+        return e;
+    }
     let (Some(d), false) = (unsafe { dev_ref(dev) }, desc.is_null()) else {
         return LIBUSB_ERROR_INVALID_PARAM;
     };
@@ -405,6 +417,9 @@ pub unsafe extern "C" fn libusb_get_config_descriptor(
     config_index: u8,
     config: *mut *mut libusb_config_descriptor,
 ) -> c_int {
+    if let Some(e) = crate::faults::check("get_config_descriptor") {
+        return e;
+    }
     let Some(d) = (unsafe { dev_ref(dev) }) else {
         return LIBUSB_ERROR_INVALID_PARAM;
     };
@@ -425,6 +440,9 @@ pub unsafe extern "C" fn libusb_get_active_config_descriptor(
     dev: *mut libusb_device,
     config: *mut *mut libusb_config_descriptor,
 ) -> c_int {
+    if let Some(e) = crate::faults::check("get_active_config_descriptor") {
+        return e;
+    }
     let Some(d) = (unsafe { dev_ref(dev) }) else {
         return LIBUSB_ERROR_INVALID_PARAM;
     };
@@ -694,14 +712,37 @@ pub unsafe extern "C" fn libusb_get_device_string(
 // ---------------------------------------------------------------------------
 // Device handles
 
+/// There are no usbfs file descriptors here: the "system device" is ignored
+/// and the emulated device number `EMUVC_WRAP_DEVICE` (default 0) is
+/// wrapped, which lets hosts exercise their wrap code paths (libuvc's
+/// `uvc_wrap`, used on Android).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn libusb_wrap_sys_device(
-    _ctx: *mut libusb_context,
-    _sys_dev: isize,
-    _handle: *mut *mut libusb_device_handle,
+    ctx: *mut libusb_context,
+    sys_dev: isize,
+    handle: *mut *mut libusb_device_handle,
 ) -> c_int {
-    warn!("emuvc: libusb_wrap_sys_device is not supported");
-    LIBUSB_ERROR_NOT_SUPPORTED
+    if let Some(e) = crate::faults::check("wrap_sys_device") {
+        return e;
+    }
+    let index: usize = std::env::var("EMUVC_WRAP_DEVICE")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(0);
+    let mut list: *mut *mut libusb_device = ptr::null_mut();
+    let n = unsafe { libusb_get_device_list(ctx, &mut list) };
+    if n < 0 {
+        return n as c_int;
+    }
+    let r = if index < n as usize {
+        debug!("wrap_sys_device({sys_dev}) -> emulated device {index}");
+        unsafe { libusb_open(*list.add(index), handle) }
+    } else {
+        warn!("emuvc: libusb_wrap_sys_device: no emulated device {index}");
+        LIBUSB_ERROR_NO_DEVICE
+    };
+    unsafe { libusb_free_device_list(list, 1) };
+    r
 }
 
 #[unsafe(no_mangle)]
@@ -709,6 +750,9 @@ pub unsafe extern "C" fn libusb_open(
     dev: *mut libusb_device,
     handle: *mut *mut libusb_device_handle,
 ) -> c_int {
+    if let Some(e) = crate::faults::check("open") {
+        return e;
+    }
     let (Some(d), false) = (unsafe { dev_ref(dev) }, handle.is_null()) else {
         return LIBUSB_ERROR_INVALID_PARAM;
     };
@@ -800,6 +844,9 @@ pub unsafe extern "C" fn libusb_get_configuration(
     handle: *mut libusb_device_handle,
     config: *mut c_int,
 ) -> c_int {
+    if let Some(e) = crate::faults::check("get_configuration") {
+        return e;
+    }
     let (Some(h), false) = (unsafe { handle_ref(handle) }, config.is_null()) else {
         return LIBUSB_ERROR_INVALID_PARAM;
     };
@@ -812,6 +859,9 @@ pub unsafe extern "C" fn libusb_set_configuration(
     handle: *mut libusb_device_handle,
     configuration: c_int,
 ) -> c_int {
+    if let Some(e) = crate::faults::check("set_configuration") {
+        return e;
+    }
     let Some(h) = (unsafe { handle_ref(handle) }) else {
         return LIBUSB_ERROR_INVALID_PARAM;
     };
@@ -840,6 +890,9 @@ pub unsafe extern "C" fn libusb_claim_interface(
     handle: *mut libusb_device_handle,
     interface_number: c_int,
 ) -> c_int {
+    if let Some(e) = crate::faults::check("claim_interface") {
+        return e;
+    }
     let Some(h) = (unsafe { handle_ref(handle) }) else {
         return LIBUSB_ERROR_INVALID_PARAM;
     };
@@ -881,6 +934,9 @@ pub unsafe extern "C" fn libusb_release_interface(
     handle: *mut libusb_device_handle,
     interface_number: c_int,
 ) -> c_int {
+    if let Some(e) = crate::faults::check("release_interface") {
+        return e;
+    }
     let Some(h) = (unsafe { handle_ref(handle) }) else {
         return LIBUSB_ERROR_INVALID_PARAM;
     };
@@ -916,6 +972,9 @@ pub unsafe extern "C" fn libusb_set_interface_alt_setting(
     interface_number: c_int,
     alternate_setting: c_int,
 ) -> c_int {
+    if let Some(e) = crate::faults::check("set_interface_alt_setting") {
+        return e;
+    }
     let Some(h) = (unsafe { handle_ref(handle) }) else {
         return LIBUSB_ERROR_INVALID_PARAM;
     };
@@ -953,6 +1012,9 @@ pub unsafe extern "C" fn libusb_clear_halt(
     handle: *mut libusb_device_handle,
     endpoint: c_uchar,
 ) -> c_int {
+    if let Some(e) = crate::faults::check("clear_halt") {
+        return e;
+    }
     let Some(h) = (unsafe { handle_ref(handle) }) else {
         return LIBUSB_ERROR_INVALID_PARAM;
     };
@@ -967,6 +1029,9 @@ pub unsafe extern "C" fn libusb_clear_halt(
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn libusb_reset_device(handle: *mut libusb_device_handle) -> c_int {
+    if let Some(e) = crate::faults::check("reset_device") {
+        return e;
+    }
     let Some(h) = (unsafe { handle_ref(handle) }) else {
         return LIBUSB_ERROR_INVALID_PARAM;
     };
@@ -982,6 +1047,9 @@ pub unsafe extern "C" fn libusb_kernel_driver_active(
     handle: *mut libusb_device_handle,
     interface_number: c_int,
 ) -> c_int {
+    if let Some(e) = crate::faults::check("kernel_driver_active") {
+        return e;
+    }
     let Some(h) = (unsafe { handle_ref(handle) }) else {
         return LIBUSB_ERROR_INVALID_PARAM;
     };
@@ -998,6 +1066,9 @@ pub unsafe extern "C" fn libusb_detach_kernel_driver(
     handle: *mut libusb_device_handle,
     interface_number: c_int,
 ) -> c_int {
+    if let Some(e) = crate::faults::check("detach_kernel_driver") {
+        return e;
+    }
     let Some(h) = (unsafe { handle_ref(handle) }) else {
         return LIBUSB_ERROR_INVALID_PARAM;
     };
@@ -1022,6 +1093,9 @@ pub unsafe extern "C" fn libusb_attach_kernel_driver(
     handle: *mut libusb_device_handle,
     interface_number: c_int,
 ) -> c_int {
+    if let Some(e) = crate::faults::check("attach_kernel_driver") {
+        return e;
+    }
     let Some(h) = (unsafe { handle_ref(handle) }) else {
         return LIBUSB_ERROR_INVALID_PARAM;
     };
@@ -1072,6 +1146,9 @@ pub unsafe extern "C" fn libusb_get_string_descriptor_ascii(
     data: *mut c_uchar,
     length: c_int,
 ) -> c_int {
+    if let Some(e) = crate::faults::check("get_string_descriptor_ascii") {
+        return e;
+    }
     if desc_index == 0 || data.is_null() || length < 1 {
         return LIBUSB_ERROR_INVALID_PARAM;
     }

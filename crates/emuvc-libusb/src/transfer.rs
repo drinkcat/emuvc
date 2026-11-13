@@ -54,6 +54,9 @@ unsafe fn iso_descs<'a>(t: *mut libusb_transfer) -> &'a mut [libusb_iso_packet_d
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn libusb_alloc_transfer(iso_packets: c_int) -> *mut libusb_transfer {
+    if crate::faults::check("alloc_transfer").is_some() {
+        return ptr::null_mut();
+    }
     let n = iso_packets.max(0) as usize;
     unsafe {
         let p = alloc_zeroed(layout(n)) as *mut Block;
@@ -88,6 +91,9 @@ pub unsafe extern "C" fn libusb_free_transfer(transfer: *mut libusb_transfer) {
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn libusb_submit_transfer(transfer: *mut libusb_transfer) -> c_int {
+    if let Some(e) = crate::faults::check("submit_transfer") {
+        return e;
+    }
     if transfer.is_null() {
         return LIBUSB_ERROR_INVALID_PARAM;
     }
@@ -166,12 +172,11 @@ pub unsafe extern "C" fn libusb_submit_transfer(transfer: *mut libusb_transfer) 
         }
         urb.short_not_ok = is_in && t.flags & LIBUSB_TRANSFER_SHORT_NOT_OK != 0;
         b.state.store(SUBMITTED, Ordering::Release);
-        let ctxp = h.ctx as usize;
+        let events = h.context().events.clone();
         let tp = transfer as usize;
         h.inflight.lock().unwrap().insert(tp, 0);
         let done = Box::new(move |c: Completion| {
-            let ctx = &*(ctxp as *const Context);
-            ctx.events.push(tp, c);
+            events.push(tp, c);
         });
         match h.host().submit(urb, done) {
             Ok(id) => {
@@ -197,6 +202,9 @@ pub unsafe extern "C" fn libusb_submit_transfer(transfer: *mut libusb_transfer) 
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn libusb_cancel_transfer(transfer: *mut libusb_transfer) -> c_int {
+    if let Some(e) = crate::faults::check("cancel_transfer") {
+        return e;
+    }
     if transfer.is_null() {
         return LIBUSB_ERROR_INVALID_PARAM;
     }
@@ -314,6 +322,8 @@ struct EvState {
     cycles: u64,
     /// URBs whose transfer was discarded by libusb_close: drop their completions.
     orphans: HashSet<u64>,
+    /// The context is gone (libusb_exit): drop every completion.
+    closed: bool,
 }
 
 #[derive(Default)]
@@ -325,12 +335,19 @@ pub struct Events {
 impl Events {
     pub fn push(&self, transfer: usize, c: Completion) {
         let mut g = self.m.lock().unwrap();
-        if g.orphans.remove(&c.id) {
+        if g.closed || g.orphans.remove(&c.id) {
             return;
         }
         g.queue.push_back((transfer, c));
         drop(g);
         self.cv.notify_all();
+    }
+
+    /// The context was destroyed: late completions are dropped.
+    pub fn close(&self) {
+        let mut g = self.m.lock().unwrap();
+        g.closed = true;
+        g.queue.clear();
     }
 
     /// Forgets these URBs: queued or future completions are dropped.
@@ -450,6 +467,9 @@ pub unsafe extern "C" fn libusb_handle_events_timeout_completed(
     tv: *mut libc::timeval,
     completed: *mut c_int,
 ) -> c_int {
+    if let Some(e) = crate::faults::check("handle_events_timeout_completed") {
+        return e;
+    }
     let Some(c) = (unsafe { ctx_ref(ctx) }) else {
         return LIBUSB_ERROR_INVALID_PARAM;
     };
@@ -469,6 +489,9 @@ pub unsafe extern "C" fn libusb_handle_events_completed(
     ctx: *mut libusb_context,
     completed: *mut c_int,
 ) -> c_int {
+    if let Some(e) = crate::faults::check("handle_events_completed") {
+        return e;
+    }
     let Some(c) = (unsafe { ctx_ref(ctx) }) else {
         return LIBUSB_ERROR_INVALID_PARAM;
     };
@@ -655,6 +678,9 @@ pub unsafe extern "C" fn libusb_control_transfer(
     w_length: u16,
     timeout: c_uint,
 ) -> c_int {
+    if let Some(e) = crate::faults::check("control_transfer") {
+        return e;
+    }
     let n = w_length as usize;
     let mut buf = vec![0u8; 8 + n];
     buf[..8].copy_from_slice(
@@ -714,6 +740,9 @@ pub unsafe extern "C" fn libusb_bulk_transfer(
     transferred: *mut c_int,
     timeout: c_uint,
 ) -> c_int {
+    if let Some(e) = crate::faults::check("bulk_transfer") {
+        return e;
+    }
     unsafe {
         sync_data(
             handle,
@@ -736,6 +765,9 @@ pub unsafe extern "C" fn libusb_interrupt_transfer(
     transferred: *mut c_int,
     timeout: c_uint,
 ) -> c_int {
+    if let Some(e) = crate::faults::check("interrupt_transfer") {
+        return e;
+    }
     unsafe {
         sync_data(
             handle,

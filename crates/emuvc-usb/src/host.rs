@@ -1010,7 +1010,9 @@ impl Engine {
                             true,
                         );
                     }
-                    _ if !q.nak || self.realtime() => consider(q.next_poll.max(self.now), false),
+                    // Data waiting for queued URBs fixes the future like iso does.
+                    _ if !q.nak => consider(q.next_poll.max(self.now), true),
+                    _ if self.realtime() => consider(q.next_poll.max(self.now), false),
                     _ => {}
                 }
                 for dl in q.urbs.iter().filter_map(|p| p.deadline) {

@@ -17,7 +17,7 @@ use emuvc_devices::{BusConfig, DEFAULT_MODEL, DeviceConfig, MODELS};
 use emuvc_usb::desc::{self, ConfigView, dtype};
 use emuvc_usb::{ClockMode, Host, HostConfig};
 use emuvc_uvc::host::capture;
-use emuvc_uvc::topology::{FormatKind, Transfer, find_video_control_interfaces, parse_function};
+use emuvc_uvc::topology::{Transfer, find_video_control_interfaces, parse_function};
 use emuvc_video::{PixelFormat, stamp};
 
 #[derive(Parser)]
@@ -37,6 +37,17 @@ enum Cmd {
         model: String,
         /// Write a raw dump (device + configuration descriptors, the sysfs
         /// `descriptors` format) usable with `generic:FILE`.
+        #[arg(long)]
+        raw: Option<PathBuf>,
+    },
+    /// Import `lsusb -v` text: print a summary, or write the rebuilt raw
+    /// descriptor dump (usable with `generic:FILE`; or use `lsusb:FILE` directly).
+    ImportLsusb {
+        file: PathBuf,
+        /// Device of the text (default: the first UVC device).
+        #[arg(long)]
+        device: Option<usize>,
+        /// Write the raw dump (device + configuration descriptors) here.
         #[arg(long)]
         raw: Option<PathBuf>,
     },
@@ -114,6 +125,7 @@ fn main() -> ExitCode {
             Ok(())
         }
         Cmd::Descriptors { model, raw } => descriptors(&model, raw),
+        Cmd::ImportLsusb { file, device, raw } => import_lsusb(&file, device, raw),
         Cmd::Selftest { model, config, n } => selftest(&model, config, n),
         Cmd::Usbip {
             listen,
@@ -143,13 +155,63 @@ fn main() -> ExitCode {
 }
 
 fn device_config(model: &str) -> DeviceConfig {
-    match model.split_once(':') {
-        Some(("generic", path)) => DeviceConfig {
-            descriptors: Some(path.into()),
-            ..DeviceConfig::model("generic")
-        },
-        _ => DeviceConfig::model(model),
+    DeviceConfig::from_spec(model)
+}
+
+fn import_lsusb(
+    file: &std::path::Path,
+    device: Option<usize>,
+    raw: Option<PathBuf>,
+) -> Result<(), String> {
+    let devices = emuvc_devices::lsusb::parse_file(file)?;
+    let chosen = emuvc_devices::lsusb::select(&devices, device)?;
+    if let Some(path) = raw {
+        return std::fs::write(&path, chosen.raw_dump())
+            .map_err(|e| format!("{}: {e}", path.display()));
     }
+    for (i, d) in devices.iter().enumerate() {
+        let dd =
+            desc::DeviceDescriptor::parse(&d.descriptors.device).ok_or("bad device descriptor")?;
+        let name = |i: u8| d.descriptors.strings.get(&i).map_or("-", String::as_str);
+        println!(
+            "{}[{i}] bus {} dev {}: {:04x}:{:04x} {} / {}, bcdUSB {:04x}, speed {}, {} config(s){}{}",
+            if std::ptr::eq(d, chosen) { "*" } else { " " },
+            d.bus,
+            d.address,
+            dd.vendor_id,
+            dd.product_id,
+            name(dd.i_manufacturer),
+            name(dd.i_product),
+            dd.bcd_usb,
+            d.speed.map_or("?".to_string(), |s| format!("{s:?}")),
+            d.descriptors.configs.len(),
+            if d.descriptors.bos.is_some() {
+                ", BOS"
+            } else {
+                ""
+            },
+            if d.is_uvc() { ", UVC" } else { "" },
+        );
+        let Some(Ok(view)) = d.descriptors.configs.first().map(|c| ConfigView::parse(c)) else {
+            continue;
+        };
+        for vc in find_video_control_interfaces(&view) {
+            match parse_function(&view, vc, d.speed.unwrap_or(emuvc_usb::Speed::High)) {
+                Ok(f) => {
+                    for vs in &f.streaming {
+                        let frames: usize = vs.formats.iter().map(|f| f.frames.len()).sum();
+                        println!(
+                            "      VC {vc}: VS interface {} with {} format(s), {frames} frame(s)",
+                            vs.interface,
+                            vs.formats.len()
+                        );
+                    }
+                }
+                Err(e) => println!("      VC {vc}: {e}"),
+            }
+        }
+    }
+    Ok(())
 }
 
 fn hex(b: &[u8]) -> String {
@@ -232,11 +294,7 @@ fn selftest(model: &str, config: Option<PathBuf>, n: usize) -> Result<(), String
             let f = parse_function(&view, vc, info.speed).map_err(|e| e.to_string())?;
             for vs in &f.streaming {
                 for fmt in &vs.formats {
-                    let pf = match &fmt.kind {
-                        FormatKind::Uncompressed { guid, .. } => PixelFormat::from_guid(guid),
-                        FormatKind::Mjpeg => Some(PixelFormat::Mjpeg),
-                        _ => None,
-                    };
+                    let pf = emuvc_uvc::stream::pixel_format(&fmt.kind);
                     for fr in &fmt.frames {
                         let label = format!(
                             "  VS{} format {} frame {:2} {:>6} {:4}x{:<4} {:5.1} fps",

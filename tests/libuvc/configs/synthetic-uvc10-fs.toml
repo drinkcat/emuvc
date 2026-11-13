@@ -1,0 +1,4 @@
+# UVC 1.0 full speed camera (26-byte probe, 1.0 processing unit layout).
+[[device]]
+model = "synthetic"
+synthetic = { uvc = "1.0", speed = "full", sizes = [[160, 120], [176, 144]], fps = [5, 1] }

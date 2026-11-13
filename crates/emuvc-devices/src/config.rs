@@ -18,7 +18,8 @@
 //! ```
 //!
 //! Without a file: `EMUVC_DEVICE=model[,model...]` (default
-//! `luxvisions-30c9-0052`; `generic:/path/to/descriptors` emulates any
+//! `luxvisions-30c9-0052`; `lsusb:/path/to/lsusb-v.txt[#N]` emulates a device from `lsusb -v` text;
+//! `generic:/path/to/descriptors` emulates any
 //! device from a raw descriptor dump such as
 //! `/sys/bus/usb/devices/<dev>/descriptors`). `EMUVC_CLOCK` and
 //! `EMUVC_SEED` override the file.
@@ -29,7 +30,7 @@ use serde::{Deserialize, Serialize};
 
 use emuvc_usb::fault::FaultRule;
 use emuvc_usb::{ClockMode, Descriptors, Speed};
-use emuvc_uvc::StreamQuirks;
+use emuvc_uvc::{EventSpec, StreamQuirks};
 use emuvc_video::{FrameSource, PatternKind, TestPattern, Threaded};
 
 fn yes() -> bool {
@@ -67,6 +68,8 @@ pub struct DeviceConfig {
     pub model: String,
     /// Raw descriptor dump (device descriptor followed by configuration descriptors).
     pub descriptors: Option<PathBuf>,
+    /// Which device of an `lsusb -v` text (model "lsusb"); default: the first UVC device.
+    pub index: Option<usize>,
     /// Speed override (generic devices default to what bcdUSB suggests).
     pub speed: Option<Speed>,
     pub manufacturer: Option<String>,
@@ -82,6 +85,11 @@ pub struct DeviceConfig {
     pub uvc: StreamQuirks,
     #[serde(rename = "fault")]
     pub faults: Vec<FaultRule>,
+    /// Device-initiated events (status interrupts) of the first UVC function.
+    #[serde(rename = "event")]
+    pub events: Vec<EventSpec>,
+    /// Options of the "synthetic" model.
+    pub synthetic: crate::synthetic::SyntheticConfig,
 }
 
 impl DeviceConfig {
@@ -89,6 +97,28 @@ impl DeviceConfig {
         DeviceConfig {
             model: name.to_string(),
             ..Default::default()
+        }
+    }
+
+    /// `model`, `generic:/path` (raw dump) or `lsusb:/path[#N]` (lsusb -v text, device N).
+    pub fn from_spec(spec: &str) -> Self {
+        match spec.split_once(':') {
+            Some(("generic", path)) => DeviceConfig {
+                descriptors: Some(path.into()),
+                ..DeviceConfig::model("generic")
+            },
+            Some(("lsusb", rest)) => {
+                let (path, index) = match rest.rsplit_once('#') {
+                    Some((p, n)) if n.parse::<usize>().is_ok() => (p, n.parse().ok()),
+                    _ => (rest, None),
+                };
+                DeviceConfig {
+                    descriptors: Some(path.into()),
+                    index,
+                    ..DeviceConfig::model("lsusb")
+                }
+            }
+            _ => DeviceConfig::model(spec),
         }
     }
 
@@ -150,13 +180,7 @@ impl BusConfig {
                 let devices = models
                     .split(',')
                     .filter(|m| !m.is_empty())
-                    .map(|m| match m.split_once(':') {
-                        Some(("generic", path)) => DeviceConfig {
-                            descriptors: Some(path.into()),
-                            ..DeviceConfig::model("generic")
-                        },
-                        _ => DeviceConfig::model(m),
-                    })
+                    .map(DeviceConfig::from_spec)
                     .collect();
                 BusConfig {
                     devices,

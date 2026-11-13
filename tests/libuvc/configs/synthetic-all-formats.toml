@@ -1,0 +1,4 @@
+# Every frame format libuvc knows (+ MPEG2-TS, DV, stream-based descriptors).
+[[device]]
+model = "synthetic"
+synthetic = { formats = ["mjpeg", "h264", "yuyv", "uyvy", "nv12", "nv21", "i420", "p010", "grey", "grey16", "bgr24", "rgb24", "by8", "ba81", "grbg8", "gbrg8", "rggb8", "bggr8"], sizes = [[320, 240]], fps = [30], extra_formats = true }

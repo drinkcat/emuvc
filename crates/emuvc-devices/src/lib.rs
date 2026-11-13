@@ -7,7 +7,9 @@
 pub mod config;
 pub mod dfu;
 pub mod generic;
+pub mod lsusb;
 pub mod luxvisions_30c9_0052;
+pub mod synthetic;
 
 pub use config::{BusConfig, DeviceConfig};
 
@@ -32,6 +34,16 @@ pub const MODELS: &[Model] = &[
         name: generic::NAME,
         description: generic::DESCRIPTION,
         build: generic::build,
+    },
+    Model {
+        name: lsusb::NAME,
+        description: lsusb::DESCRIPTION,
+        build: lsusb::build,
+    },
+    Model {
+        name: synthetic::NAME,
+        description: synthetic::DESCRIPTION,
+        build: synthetic::build,
     },
 ];
 

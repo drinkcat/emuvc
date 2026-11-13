@@ -1,0 +1,4 @@
+# Device stalling probe/commit with an unexpected wLength (e.g. Lenovo T490s camera).
+[[device]]
+model = "luxvisions-30c9-0052"
+uvc = { probe_len = 34, strict_probe_len = true }

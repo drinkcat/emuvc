@@ -1,0 +1,4 @@
+# UVC 1.5 encoding unit: libuvc rejects the unknown VC subtype (UVC_ERROR_INVALID_DEVICE).
+[[device]]
+model = "synthetic"
+synthetic = { encoding_unit = true }

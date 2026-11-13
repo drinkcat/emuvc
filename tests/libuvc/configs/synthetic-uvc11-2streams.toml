@@ -1,0 +1,4 @@
+# UVC 1.1 with two VideoStreaming interfaces in one function.
+[[device]]
+model = "synthetic"
+synthetic = { uvc = "1.1", streams = 2 }

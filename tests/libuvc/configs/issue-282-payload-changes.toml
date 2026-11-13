@@ -1,0 +1,4 @@
+# libuvc #282/#218: SET_CUR(PROBE) result reports a different dwMaxPayloadTransferSize.
+[[device]]
+model = "luxvisions-30c9-0052"
+uvc = { probe_cur = { max_payload_transfer_size = 1024 } }

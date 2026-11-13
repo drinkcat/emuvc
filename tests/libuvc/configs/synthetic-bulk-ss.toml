@@ -1,0 +1,4 @@
+# SuperSpeed bulk streaming.
+[[device]]
+model = "synthetic"
+synthetic = { speed = "super", transfer = "bulk" }

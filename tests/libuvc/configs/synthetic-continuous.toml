@@ -1,0 +1,4 @@
+# Continuous frame intervals.
+[[device]]
+model = "synthetic"
+synthetic = { continuous = true }

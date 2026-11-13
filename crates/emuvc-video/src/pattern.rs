@@ -179,6 +179,19 @@ impl FrameSource for TestPattern {
             PixelFormat::Uyvy => convert::rgb_to_uyvy(&rgb, w, h, &mut out),
             PixelFormat::Nv12 => convert::rgb_to_nv12(&rgb, w, h, &mut out),
             PixelFormat::Grey8 => convert::rgb_to_grey(&rgb, w, h, &mut out),
+            PixelFormat::Grey16 => convert::rgb_to_grey16(&rgb, w, h, &mut out),
+            PixelFormat::P010 => convert::rgb_to_p010(&rgb, w, h, &mut out),
+            PixelFormat::I420 => convert::rgb_to_i420(&rgb, w, h, &mut out),
+            PixelFormat::Nv21 => convert::rgb_to_nv21(&rgb, w, h, &mut out),
+            PixelFormat::Bgr24 => convert::rgb_to_rgb24(&rgb, w, h, &mut out, true),
+            PixelFormat::Rgb24 => convert::rgb_to_rgb24(&rgb, w, h, &mut out, false),
+            PixelFormat::By8 | PixelFormat::Ba81 | PixelFormat::Bggr8 => {
+                convert::rgb_to_bayer(&rgb, w, h, &mut out, [2, 1, 1, 0])
+            }
+            PixelFormat::Grbg8 => convert::rgb_to_bayer(&rgb, w, h, &mut out, [1, 0, 2, 1]),
+            PixelFormat::Gbrg8 => convert::rgb_to_bayer(&rgb, w, h, &mut out, [1, 2, 0, 1]),
+            PixelFormat::Rggb8 => convert::rgb_to_bayer(&rgb, w, h, &mut out, [0, 1, 1, 2]),
+            PixelFormat::H264 => out = crate::h264::frame(index, spec.width, spec.height),
             PixelFormat::Mjpeg => {
                 out = jpeg::encode_rgb(&rgb, spec.width, spec.height, self.quality);
                 if self.strip_dht {
@@ -188,5 +201,57 @@ impl FrameSource for TestPattern {
         }
         self.work = rgb;
         out
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn stamp_round_trip_and_motion() {
+        for fmt in PixelFormat::ALL {
+            if matches!(fmt, PixelFormat::Mjpeg | PixelFormat::H264) {
+                continue;
+            }
+            for (w, h) in [(320u16, 240u16), (640, 480)] {
+                let spec = FrameSpec {
+                    format: fmt,
+                    width: w,
+                    height: h,
+                };
+                let mut src = TestPattern::default();
+                let a = src.render(&spec, 7, 0);
+                assert_eq!(a.len(), fmt.frame_size(w, h).unwrap(), "{fmt:?}");
+                assert_eq!(
+                    stamp::decode_frame(fmt, &a, w as usize, h as usize),
+                    Some(7),
+                    "{fmt:?} {w}x{h}"
+                );
+                let b = src.render(&spec, 8, 0);
+                assert_ne!(a, b, "{fmt:?}");
+                assert_eq!(
+                    stamp::decode_frame(fmt, &b, w as usize, h as usize),
+                    Some(8),
+                    "{fmt:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn odd_size_stamp() {
+        for fmt in PixelFormat::ALL {
+            if matches!(fmt, PixelFormat::Mjpeg | PixelFormat::H264) {
+                continue;
+            }
+            let spec = FrameSpec {
+                format: fmt,
+                width: 321,
+                height: 241,
+            };
+            let a = TestPattern::default().render(&spec, 3, 0);
+            assert_eq!(stamp::decode_frame(fmt, &a, 321, 241), Some(3), "{fmt:?}");
+        }
     }
 }

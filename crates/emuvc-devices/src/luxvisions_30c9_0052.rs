@@ -421,9 +421,10 @@ pub fn build(cfg: &DeviceConfig) -> Result<CompositeDevice, String> {
         let mut uvc =
             UvcFunction::new(f, Speed::High, cfg.uvc.clone(), &mut |_| cfg.frame_source());
         if vc == 0 {
-            tune_rgb(&mut uvc)
+            tune_rgb(&mut uvc);
+            uvc.set_events(cfg.events.clone());
         } else {
-            tune_ir(&mut uvc)
+            tune_ir(&mut uvc);
         }
         dev.add_function(&uvc.interfaces(), Box::new(uvc));
     }

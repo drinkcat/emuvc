@@ -131,7 +131,42 @@ pub fn decode_frame(format: PixelFormat, data: &[u8], width: usize, height: usiz
             }
             decode_luma(&luma, width, height, width)
         }
+        PixelFormat::Grey16 | PixelFormat::P010 => {
+            // High byte of each little-endian word is the 8-bit luma.
+            let stride = if format == PixelFormat::P010 {
+                w2 * 2
+            } else {
+                width * 2
+            };
+            if data.len() < stride * band {
+                return None;
+            }
+            let mut luma = Vec::with_capacity(width * band);
+            for y in 0..band {
+                luma.extend(data[y * stride..][..width * 2].iter().skip(1).step_by(2));
+            }
+            decode_luma(&luma, width, height, width)
+        }
+        PixelFormat::I420 | PixelFormat::Nv21 => decode_luma(data, width, height, w2),
+        PixelFormat::Bgr24 | PixelFormat::Rgb24 => {
+            let stride = width * 3;
+            if data.len() < stride * band {
+                return None;
+            }
+            let mut luma = Vec::with_capacity(width * band);
+            for y in 0..band {
+                luma.extend(data[y * stride..][..stride].iter().step_by(3));
+            }
+            decode_luma(&luma, width, height, width)
+        }
+        PixelFormat::By8
+        | PixelFormat::Ba81
+        | PixelFormat::Grbg8
+        | PixelFormat::Gbrg8
+        | PixelFormat::Rggb8
+        | PixelFormat::Bggr8 => decode_luma(data, width, height, width),
         PixelFormat::Mjpeg => decode_mjpeg(data, width, height),
+        PixelFormat::H264 => crate::h264::decode(data),
     }
 }
 

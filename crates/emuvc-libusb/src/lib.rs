@@ -9,6 +9,7 @@
 
 pub mod core;
 pub mod descriptors;
+pub mod faults;
 pub mod ffi;
 mod misc;
 mod setup;

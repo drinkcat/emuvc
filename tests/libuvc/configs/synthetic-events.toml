@@ -1,0 +1,25 @@
+# Status interrupts: button presses, device-side control changes, malformed packets.
+[[device]]
+model = "synthetic"
+[[device.event]]
+every_ms = 100
+kind = "button"
+[[device.event]]
+at_ms = 50
+every_ms = 200
+kind = { control = { entity = 3, selector = 2, value = [10, 0] } }
+[[device.event]]
+at_ms = 150
+kind = { control = { entity = 1, selector = 0x11, value = [1] } }
+[[device.event]]
+at_ms = 250
+kind = { raw = [1, 3] }
+[[device.event]]
+at_ms = 260
+kind = { raw = [2, 1, 0] }
+[[device.event]]
+at_ms = 270
+kind = { raw = [2, 1, 1, 0] }
+[[device.event]]
+at_ms = 280
+kind = { raw = [1, 9, 0, 2, 0, 0] }
