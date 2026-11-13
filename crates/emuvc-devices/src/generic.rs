@@ -91,6 +91,7 @@ pub fn from_descriptors(
         let mut uvc = UvcFunction::new(f, speed, cfg.uvc.clone(), &mut |_| cfg.frame_source());
         if i == 0 {
             uvc.set_events(cfg.events.clone());
+            uvc.configure_controls(&cfg.controls)?;
         }
         dev.add_function(&uvc.interfaces(), Box::new(uvc));
     }

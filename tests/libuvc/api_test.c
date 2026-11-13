@@ -312,7 +312,7 @@ static const enum uvc_req_code REQS[] = {UVC_GET_CUR, UVC_GET_MIN, UVC_GET_MAX, 
 /* ---- spec rules for controls, derived from what the device reports (UVC 1.5 4.1.2, 4.2) ---- */
 #define VC_REQUEST_ERROR_CODE_CONTROL 0x02
 enum { INFO_GET = 1, INFO_SET = 2, INFO_DISABLED = 4, INFO_AUTOUPDATE = 8, INFO_ASYNC = 16 };
-enum { ERR_WRONG_STATE = 0x02, ERR_OUT_OF_RANGE = 0x04, ERR_INVALID_VALUE_WITHIN_RANGE = 0x08 };
+enum { ERR_NOT_READY = 0x01, ERR_WRONG_STATE = 0x02, ERR_OUT_OF_RANGE = 0x04, ERR_INVALID_VALUE_WITHIN_RANGE = 0x08 };
 
 /* bRequestErrorCode for the last request, or -1 when the device has no such control. */
 static int req_error(void) {
@@ -327,6 +327,16 @@ static void expect_rejected(int r, int code, const char *what, uint8_t unit, uin
   int e = req_error();
   if (e < 0) soft(e);
   else expect(e == code, "%u/%u: %s: error code %d, want %d", unit, sel, what, e, code);
+}
+
+/* GET_CUR, retried while an asynchronous SET_CUR keeps the control "not ready" (2.4.4). */
+static int get_cur_ready(uint8_t unit, uint8_t sel, void *b, int len) {
+  int r = -1;
+  for (int t = 0; t < 200; t++) {
+    if ((r = uvc_get_ctrl(devh, unit, sel, b, len, UVC_GET_CUR)) >= 0 || req_error() != ERR_NOT_READY) break;
+    usleep(10000);
+  }
+  return r;
 }
 
 static int ctrl_info(uint8_t unit, uint8_t sel) {
@@ -405,7 +415,7 @@ static void expect_dep_state(uint8_t unit, uint8_t dep, int disabled, const char
          disabled ? "is" : "is not", why);
   int len = uvc_get_ctrl_len(devh, unit, dep);
   uint8_t b[64];
-  if (len <= 0 || len > (int)sizeof b || uvc_get_ctrl(devh, unit, dep, b, len, UVC_GET_CUR) != len) { expect(0, "%u/%u: GET_CUR", unit, dep); return; }
+  if (len <= 0 || len > (int)sizeof b || get_cur_ready(unit, dep, b, len) != len) { expect(0, "%u/%u: GET_CUR", unit, dep); return; }
   int r = uvc_set_ctrl(devh, unit, dep, b, len);
   if (disabled) expect_rejected(r, ERR_WRONG_STATE, why, unit, dep);
   else expect(r == len, "%u/%u: SET_CUR accepted (%s)", unit, dep, why);
@@ -575,7 +585,7 @@ static void mode_controls(void) {
         xok++;
         int w = soft(uvc_set_ctrl(devh, x->bUnitID, sel, b, len));
         if (w == len) {
-          expect(uvc_get_ctrl(devh, x->bUnitID, sel, b2, len, UVC_GET_CUR) == len && !memcmp(b, b2, len), "XU %u/%d read-back", x->bUnitID, sel);
+          expect(get_cur_ready(x->bUnitID, sel, b2, len) == len && !memcmp(b, b2, len), "XU %u/%d read-back", x->bUnitID, sel);
         }
       }
       free(b); free(b2);
@@ -992,10 +1002,25 @@ static void mode_multi(void) {
 
 /* ================= status ================= */
 static volatile int n_status, n_button;
+/* status events by bAttribute: value, info, failure, min, max change; anything else */
+static volatile int n_attr[6];
+/* the latest control status events, for the async mode */
+static pthread_mutex_t ev_lock = PTHREAD_MUTEX_INITIALIZER;
+static struct { enum uvc_status_class c; int sel, attr; size_t len; uint8_t data[64]; } evs[64];
+static int n_evs;
 static void status_cb(enum uvc_status_class c, int ev, int sel, enum uvc_status_attribute a, void *d, size_t l, void *u) {
-  (void)ev; (void)d; (void)u;
+  (void)ev; (void)u;
   n_status++;
+  n_attr[(unsigned)a < 5 ? (unsigned)a : 5]++;
   printf("  status event class=0x%x selector=%d attribute=%d len=%zu\n", c, sel, a, l);
+  pthread_mutex_lock(&ev_lock);
+  if (n_evs < (int)(sizeof evs / sizeof *evs)) {
+    evs[n_evs].c = c; evs[n_evs].sel = sel; evs[n_evs].attr = a;
+    evs[n_evs].len = l < sizeof evs[0].data ? l : sizeof evs[0].data;
+    memcpy(evs[n_evs].data, d, evs[n_evs].len);
+    n_evs++;
+  }
+  pthread_mutex_unlock(&ev_lock);
 }
 static void button_cb(int b, int s, void *u) { (void)u; n_button++; printf("  button %d state %d\n", b, s); }
 
@@ -1029,7 +1054,80 @@ static void mode_status(void) {
   uvc_set_button_callback(devh, NULL, NULL);
   usleep(50000);
   if (s) { uvc_stream_stop(s); uvc_stream_close(s); }
-  printf("RESULT_EXTRA status_events=%d button_events=%d\n", n_status, n_button);
+  printf("RESULT_EXTRA status_events=%d button_events=%d value=%d info=%d failure=%d min=%d max=%d other=%d\n", n_status, n_button,
+         n_attr[0], n_attr[1], n_attr[2], n_attr[3], n_attr[4], n_attr[5]);
+}
+
+/* ================= async ================= */
+/* Waits up to 2 s for a value or failure change of (class, sel); returns its index in evs, or -1. */
+static int wait_control_event(enum uvc_status_class c, int sel, int from) {
+  for (int t = 0; t < 200; t++) {
+    pthread_mutex_lock(&ev_lock);
+    for (int i = from; i < n_evs; i++)
+      if (evs[i].c == c && evs[i].sel == sel && (evs[i].attr == UVC_STATUS_ATTRIBUTE_VALUE_CHANGE || evs[i].attr == UVC_STATUS_ATTRIBUTE_FAILURE_CHANGE)) {
+        pthread_mutex_unlock(&ev_lock);
+        return i;
+      }
+    pthread_mutex_unlock(&ev_lock);
+    usleep(10000);
+  }
+  return -1;
+}
+
+/* SET_CUR of `v` on an asynchronous control (2.4.4): accepted at once, the control is "not ready"
+ * until its Control Change interrupt, which carries the new value (then read back by GET_CUR) or a
+ * failure code (then the value is unchanged). Returns 1 on success, 0 on failure change, -1 if lost. */
+static int async_set(enum uvc_status_class c, uint8_t unit, uint8_t sel, const uint8_t *v, const uint8_t *old, int len) {
+  uint8_t b[64];
+  pthread_mutex_lock(&ev_lock); n_evs = 0; pthread_mutex_unlock(&ev_lock);
+  const int from = 0;
+  expect(uvc_set_ctrl(devh, unit, sel, (void *)v, len) == len, "%u/%u: async SET_CUR accepted", unit, sel);
+  if (uvc_get_ctrl(devh, unit, sel, b, len, UVC_GET_CUR) < 0) {
+    int e = req_error();
+    if (e < 0) soft(e); else expect(e == ERR_NOT_READY, "%u/%u: GET_CUR while pending: error code %d, want not ready", unit, sel, e);
+    expect_rejected(uvc_set_ctrl(devh, unit, sel, (void *)v, len), ERR_NOT_READY, "SET_CUR while pending", unit, sel);
+  }
+  int i = wait_control_event(c, sel, from);
+  expect(i >= 0, "%u/%u: Control Change interrupt after async SET_CUR", unit, sel);
+  if (i < 0) return -1;
+  int ok = evs[i].attr == UVC_STATUS_ATTRIBUTE_VALUE_CHANGE;
+  if (ok) expect(evs[i].len == (size_t)len && !memcmp(evs[i].data, v, len), "%u/%u: value change carries the new value", unit, sel);
+  else expect(evs[i].len == 1 && evs[i].data[0] != 0, "%u/%u: failure change carries an error code (len %zu)", unit, sel, evs[i].len);
+  expect(uvc_get_ctrl(devh, unit, sel, b, len, UVC_GET_CUR) == len && !memcmp(b, ok ? v : old, len),
+         "%u/%u: GET_CUR after the %s change", unit, sel, ok ? "value" : "failure");
+  return ok;
+}
+
+static void mode_async(void) {
+  expect(open_device() == 0, "open device");
+  if (!devh) return;
+  uvc_set_status_callback(devh, status_cb, NULL);
+  const uvc_input_terminal_t *ct = uvc_get_camera_terminal(devh);
+  const uvc_processing_unit_t *pu = uvc_get_processing_units(devh);
+  int n_ok = 0, n_failed = 0;
+  for (int k = 0; k < 2; k++) {
+    if (k == 0 ? !ct : !pu) continue;
+    uint8_t unit = k == 0 ? ct->bTerminalID : pu->bUnitID;
+    enum uvc_status_class c = k == 0 ? UVC_STATUS_CLASS_CONTROL_CAMERA : UVC_STATUS_CLASS_CONTROL_PROCESSING;
+    for (int sel = 1; sel <= 0x20; sel++) {
+      int info = ctrl_info(unit, sel);
+      if (info < 0 || (info & (INFO_ASYNC | INFO_SET | INFO_DISABLED)) != (INFO_ASYNC | INFO_SET)) continue;
+      int len = uvc_get_ctrl_len(devh, unit, sel);
+      uint8_t cur[64], v[64];
+      if (len <= 0 || len > 64 || uvc_get_ctrl(devh, unit, sel, cur, len, UVC_GET_CUR) != len) { expect(0, "%u/%u: GET_CUR", unit, sel); continue; }
+      /* a legal value other than the current one: DEF, MIN or MAX */
+      static const enum uvc_req_code PICK[] = {UVC_GET_DEF, UVC_GET_MIN, UVC_GET_MAX};
+      int found = 0;
+      for (unsigned j = 0; j < 3 && !found; j++)
+        found = uvc_get_ctrl(devh, unit, sel, v, len, PICK[j]) == len && memcmp(v, cur, len);
+      if (!found) continue;
+      int r = async_set(c, unit, sel, v, cur, len);
+      if (r > 0) { n_ok++; async_set(c, unit, sel, cur, cur, len); }
+      else if (r == 0) n_failed++;
+    }
+  }
+  uvc_set_status_callback(devh, NULL, NULL);
+  printf("RESULT_EXTRA async_ok=%d async_failed=%d\n", n_ok, n_failed);
 }
 
 /* ================= negotiate ================= */
@@ -1159,11 +1257,11 @@ static void mode_wrap(void) {
 typedef void (*mode_fn)(void);
 static const struct { const char *name; mode_fn fn; } MODES[] = {
   {"info", mode_info}, {"controls", mode_controls}, {"convert", mode_convert}, {"poll", mode_poll},
-  {"still", mode_still}, {"multi", mode_multi}, {"status", mode_status}, {"negotiate", mode_negotiate}, {"wrap", mode_wrap},
+  {"still", mode_still}, {"multi", mode_multi}, {"status", mode_status}, {"async", mode_async}, {"negotiate", mode_negotiate}, {"wrap", mode_wrap},
 };
 
 static void usage(void) {
-  fprintf(stderr, "usage: api_test [-d VID:PID] [-n INDEX] [-m STATUS_WAIT_MS] [-l] MODE...\n  modes: info controls convert poll still multi status negotiate wrap all\n");
+  fprintf(stderr, "usage: api_test [-d VID:PID] [-n INDEX] [-m STATUS_WAIT_MS] [-l] MODE...\n  modes: info controls convert poll still multi status async negotiate wrap all\n");
 }
 
 int main(int argc, char **argv) {

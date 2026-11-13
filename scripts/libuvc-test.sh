@@ -163,7 +163,7 @@ EXPECT_RC=1 CHECK_RE='FAIL brightness GET_DEF = .*\(Pipe\)' run_case stall-get-d
 # api_test: public API coverage (see tests/libuvc/api_test.c); modes adapt to the device.
 # run_api NAME [VAR=val ...] -- api_test args...  (failure = crash/hang/inconsistent data)
 run_api() { local name=$1; shift; TEST_BIN=api_test run_case "$name" pass "$@"; }
-for m in info controls convert poll still multi status negotiate; do
+for m in info controls convert poll still multi status async negotiate; do
   CHECK_RE="^RESULT mode=$m " run_api "api-$m" $D -- -m 500 "$m"
 done
 CHECK_RE='^RESULT mode=info ' run_api api-info-two-devices EMUVC_DEVICE=luxvisions-30c9-0052,luxvisions-30c9-0052 -- info
@@ -191,6 +191,13 @@ for c in desc-unknown-vs-subtype desc-color-before-frames desc-num-frames-over d
   CHECK_RE='^RESULT mode=wrap ' run_api "api-$c" EMUVC_CONFIG="$CFG/$c.toml" $V -- -m 1500 all
 done
 
+# Asynchronous controls (UVC 1.5 2.4.4): completions and a Control Failure Change reach the status callback.
+CHECK_RE='async_ok=[2-9] async_failed=1' run_api api-async-completion EMUVC_CONFIG="$CFG/synthetic-async.toml" -- async
+# Status packets at the edges of 2.4.2.2: malformed ones are dropped, well-formed ones still arrive.
+# (libuvc forwards the reserved bAttribute 9 to the callback: counted as other=1, not checked.)
+CHECK_RE='button_events=2 value=[0-9]+ info=[0-9]+ failure=1 min=1 max=1 ' \
+  run_api api-status-edge EMUVC_CONFIG="$CFG/status-edge.toml" -- -m 1000 status
+
 # Issue reproductions (configs/issue-*.toml) libuvc handles now: all modes, strict.
 for c in issue-193-zero-packet-alt issue-276-get-max-zero-payload issue-282-payload-changes issue-336-step-zero; do
   CHECK_RE='^RESULT mode=wrap ' run_api "api-$c" EMUVC_CONFIG="$CFG/$c.toml" $V -- -m 1500 all
@@ -198,7 +205,7 @@ done
 
 # Devices too broken to stream, injected faults (robust): libuvc may fail, but cleanly. Every mode
 # runs in its own process, so that a crash in one doesn't hide the others.
-API_MODES="info controls convert poll still multi status negotiate wrap"
+API_MODES="info controls convert poll still multi status async negotiate wrap"
 run_api_robust() { # NAME [VAR=val ...]
   local name=$1; shift
   for m in $API_MODES; do

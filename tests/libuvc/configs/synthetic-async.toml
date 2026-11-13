@@ -1,0 +1,16 @@
+# Synthetic camera with asynchronous controls (UVC 1.5 2.4.4): brightness completes 100 ms after
+# SET_CUR; contrast fails 20 ms after SET_CUR with a Control Failure Change ("wrong state").
+# The region of interest control is asynchronous by default.
+[[device]]
+model = "synthetic"
+
+[[device.control]]
+entity = 3
+selector = 0x02  # PU_BRIGHTNESS_CONTROL
+async_ms = 100
+
+[[device.control]]
+entity = 3
+selector = 0x03  # PU_CONTRAST_CONTROL
+async_ms = 20
+fail = 0x02      # wrong state

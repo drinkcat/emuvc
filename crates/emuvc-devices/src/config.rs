@@ -30,7 +30,7 @@ use serde::{Deserialize, Serialize};
 
 use emuvc_usb::fault::FaultRule;
 use emuvc_usb::{ClockMode, Descriptors, Speed};
-use emuvc_uvc::{EventSpec, StreamQuirks};
+use emuvc_uvc::{ControlSpec, EventSpec, StreamQuirks};
 use emuvc_video::{FrameSource, PatternKind, TestPattern, Threaded};
 
 fn yes() -> bool {
@@ -88,6 +88,9 @@ pub struct DeviceConfig {
     /// Device-initiated events (status interrupts) of the first UVC function.
     #[serde(rename = "event")]
     pub events: Vec<EventSpec>,
+    /// Per-control behaviour (asynchronous controls) of the first UVC function.
+    #[serde(rename = "control")]
+    pub controls: Vec<ControlSpec>,
     /// Edits of the configuration descriptor the host reads (see [`crate::patch`]).
     #[serde(rename = "patch")]
     pub patches: Vec<crate::patch::DescriptorPatch>,

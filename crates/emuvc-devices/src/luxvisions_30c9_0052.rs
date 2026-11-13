@@ -423,6 +423,7 @@ pub fn build(cfg: &DeviceConfig) -> Result<CompositeDevice, String> {
         if vc == 0 {
             tune_rgb(&mut uvc);
             uvc.set_events(cfg.events.clone());
+            uvc.configure_controls(&cfg.controls)?;
         } else {
             tune_ir(&mut uvc);
         }

@@ -10,7 +10,7 @@ use emuvc_uvc::consts::*;
 use emuvc_uvc::host::{Reassembler, capture, probe_commit};
 use emuvc_uvc::stream::{StillControl, pixel_format};
 use emuvc_uvc::topology::{Transfer, parse_function};
-use emuvc_uvc::{EventKind, EventSpec};
+use emuvc_uvc::{ControlSpec, EventKind, EventSpec};
 use emuvc_video::stamp;
 
 fn host() -> Host {
@@ -221,6 +221,7 @@ fn events_fire() {
                 entity: 3,
                 selector: PU_BRIGHTNESS_CONTROL,
                 value: vec![7, 0],
+                attribute: STATUS_ATTR_VALUE,
             },
         },
         EventSpec {
@@ -282,4 +283,118 @@ fn bulk_transfer_kind() {
         f.streaming[0].transfer,
         Transfer::Bulk { max_packet: 512 }
     ));
+}
+
+fn pu_get(host: &Host, dev: DeviceId, cs: u8) -> Result<Vec<u8>, UsbError> {
+    host.control(
+        dev,
+        SetupPacket::new(0xa1, GET_CUR, (cs as u16) << 8, 3 << 8, 2),
+        &[],
+        None,
+    )
+}
+
+fn pu_set(host: &Host, dev: DeviceId, cs: u8, v: &[u8]) -> Result<Vec<u8>, UsbError> {
+    let setup = SetupPacket::new(0x21, SET_CUR, (cs as u16) << 8, 3 << 8, v.len() as u16);
+    host.control(dev, setup, v, None)
+}
+
+fn request_error(host: &Host, dev: DeviceId) -> u8 {
+    let setup = SetupPacket::new(
+        0xa1,
+        GET_CUR,
+        (VC_REQUEST_ERROR_CODE_CONTROL as u16) << 8,
+        0,
+        1,
+    );
+    host.control(dev, setup, &[], None).unwrap()[0]
+}
+
+/// UVC 1.5 2.4.4: asynchronous SET_CUR completes with a Control Change interrupt (value or
+/// failure); the control is "not ready" meanwhile, the others are not.
+#[test]
+fn async_controls() {
+    let mut cfg = synthetic(SyntheticConfig::default());
+    cfg.controls = vec![
+        ControlSpec {
+            entity: 3,
+            selector: PU_BRIGHTNESS_CONTROL,
+            async_ms: Some(50),
+            fail: None,
+        },
+        ControlSpec {
+            entity: 3,
+            selector: PU_CONTRAST_CONTROL,
+            async_ms: Some(10),
+            fail: Some(ERR_WRONG_STATE),
+        },
+    ];
+    let host = host();
+    let dev = host.attach(build(&cfg).unwrap()).unwrap().id;
+    let info = |cs: u8| {
+        let setup = SetupPacket::new(0xa1, GET_INFO, (cs as u16) << 8, 3 << 8, 1);
+        host.control(dev, setup, &[], None).unwrap()[0]
+    };
+    assert_ne!(info(PU_BRIGHTNESS_CONTROL) & INFO_ASYNC, 0);
+    let status = || host.transfer(Urb::interrupt_in(dev, 0x87, 16)).data;
+
+    // Invalid values still STALL right away.
+    assert!(pu_set(&host, dev, PU_BRIGHTNESS_CONTROL, &[0xff, 0x7f]).is_err());
+    assert_eq!(request_error(&host, dev), ERR_OUT_OF_RANGE);
+
+    assert_eq!(
+        pu_set(&host, dev, PU_BRIGHTNESS_CONTROL, &[5, 0]),
+        Ok(vec![])
+    );
+    assert!(pu_get(&host, dev, PU_BRIGHTNESS_CONTROL).is_err());
+    assert_eq!(request_error(&host, dev), ERR_NOT_READY);
+    assert!(pu_set(&host, dev, PU_BRIGHTNESS_CONTROL, &[6, 0]).is_err());
+    assert_eq!(request_error(&host, dev), ERR_NOT_READY);
+    assert_eq!(pu_get(&host, dev, PU_SATURATION_CONTROL), Ok(vec![64, 0]));
+    assert_eq!(
+        status(),
+        [
+            STATUS_ORIGINATOR_VC,
+            3,
+            0,
+            PU_BRIGHTNESS_CONTROL,
+            STATUS_ATTR_VALUE,
+            5,
+            0
+        ]
+    );
+    assert_eq!(pu_get(&host, dev, PU_BRIGHTNESS_CONTROL), Ok(vec![5, 0]));
+
+    // Failure: Control Failure Change with the error code, value unchanged.
+    assert_eq!(
+        pu_set(&host, dev, PU_CONTRAST_CONTROL, &[10, 0]),
+        Ok(vec![])
+    );
+    assert_eq!(
+        status(),
+        [
+            STATUS_ORIGINATOR_VC,
+            3,
+            0,
+            PU_CONTRAST_CONTROL,
+            STATUS_ATTR_FAILURE,
+            ERR_WRONG_STATE
+        ]
+    );
+    assert_eq!(pu_get(&host, dev, PU_CONTRAST_CONTROL), Ok(vec![32, 0]));
+
+    // Synchronous autoupdate controls report every SET_CUR too (2.4.2.2).
+    assert_eq!(pu_set(&host, dev, PU_HUE_CONTROL, &[3, 0]), Ok(vec![]));
+    assert_eq!(
+        status(),
+        [
+            STATUS_ORIGINATOR_VC,
+            3,
+            0,
+            PU_HUE_CONTROL,
+            STATUS_ATTR_VALUE,
+            3,
+            0
+        ]
+    );
 }

@@ -573,6 +573,7 @@ pub fn build(cfg: &DeviceConfig) -> Result<CompositeDevice, String> {
         }
         if i == 0 {
             uvc.set_events(cfg.events.clone());
+            uvc.configure_controls(&cfg.controls)?;
         }
         dev.add_function(&uvc.interfaces(), Box::new(uvc));
     }
