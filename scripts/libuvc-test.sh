@@ -131,7 +131,7 @@ INFO_LINES=40 run_case stall-get-def info EMUVC_CONFIG="$CFG/stall-get-def.toml"
 # api_test: public API coverage (see tests/libuvc/api_test.c); modes adapt to the device.
 # run_api NAME [VAR=val ...] -- api_test args...  (failure = crash/hang/inconsistent data)
 run_api() { local name=$1; shift; TEST_BIN=api_test run_case "$name" pass "$@"; }
-for m in info controls convert poll still multi status negotiate; do
+for m in info controls convert poll still multi status negotiate transfers; do
   CHECK_RE="^RESULT mode=$m " run_api "api-$m" $D -- -m 500 "$m"
 done
 CHECK_RE='^RESULT mode=info ' run_api api-info-two-devices EMUVC_DEVICE=luxvisions-30c9-0052,luxvisions-30c9-0052 -- info
@@ -148,6 +148,10 @@ for c in err-bit drop-truncate header-2 header-lie probe-len-34-strict ignore-fo
   CHECK_RE='^RESULT mode=negotiate ' run_api "api-fault-$c" EMUVC_CONFIG="$CFG/$c.toml" -- -l poll still status negotiate
 done
 
+# Transfer errors libuvc does not retry (LIBUSB_TRANSFER_ERROR, e.g. EPROTO) each cost it one of its
+# LIBUVC_NUM_TRANSFER_BUFS transfers: the stream stalls once they are gone (finding; prints the countdown).
+INFO_LINES=14 TEST_BIN=api_test run_case api-transfers-bulk-errors info EMUVC_CONFIG="$CFG/bulk-transfer-errors.toml" $V -- transfers
+
 # Synthetic devices (every control/unit/format, bulk/SuperSpeed/UVC 1.0/two streams/...): all modes, strict.
 for c in "$CFG"/synthetic-*.toml; do
   n=$(basename "$c" .toml)
@@ -156,7 +160,7 @@ done
 
 # Issue reproductions: libuvc is expected to fail on some of these, so every mode runs in its own
 # process and only the outcome is reported (rc=139/136 = libuvc crashed, a finding, never a hang).
-API_MODES="info controls convert poll still multi status negotiate wrap"
+API_MODES="info controls convert poll still multi status negotiate transfers wrap"
 run_api_each() { # NAME [VAR=val ...] -- (modes run one by one)
   local name=$1; shift
   for m in $API_MODES; do

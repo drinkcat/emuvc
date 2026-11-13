@@ -1,0 +1,14 @@
+# Bulk camera on a marginal link: every 10th bulk IN attempt (counting polls the
+# device NAKs) fails with a transaction error (EPROTO: CRC, bit stuffing or a
+# missing handshake), which libusb reports as LIBUSB_TRANSFER_ERROR. libuvc
+# frees such a transfer instead of resubmitting it: after LIBUVC_NUM_TRANSFER_BUFS
+# (100) errors none is left and the stream stops, without reporting an error.
+# At 640x480 YUYV 30 fps, a frame is 19 transfers of 32 KiB: if one transfer in
+# 1000 failed, libuvc would stop after about 3 minutes.
+[[device]]
+model = "synthetic"
+synthetic = { transfer = "bulk", formats = ["yuyv"], sizes = [[640, 480]] }
+[[device.fault]]
+on = { data_in = { ep = 0x81 } }
+action = { error = "protocol" }
+every = 10

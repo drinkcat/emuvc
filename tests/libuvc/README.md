@@ -22,11 +22,15 @@ Runs libuvc (built out of tree, never modified) against the emuvc libusb shim
 ## API coverage (`api_test.c`) and `scripts/libuvc-coverage.sh`
 
 `api_test [-d VID:PID] [-n INDEX] [-m MS] [-l] MODE...` exercises libuvc's public API
-(modes: `info controls convert poll still multi status negotiate wrap`, or `all`). It discovers
+(modes: `info controls convert poll still multi status negotiate transfers wrap`, or `all`). It discovers
 what the device offers through libuvc itself (formats, units, extension units, still
 patterns, streaming interfaces), so richer emulated devices raise coverage without code
 changes. Calls a device cannot serve are counted as "soft"; failures are crashes/hangs
 (45 s SIGALRM watchdog), inconsistent data, or an API accepting what it must reject.
+`transfers` streams 90 frames while counting libuvc's transfers in flight (`strmh->transfers[]`):
+none may be lost and frames must keep coming. `configs/bulk-transfer-errors.toml` (case
+`api-transfers-bulk-errors`) shows libuvc dropping a transfer on each `LIBUSB_TRANSFER_ERROR`
+until none is left and the stream stops.
 `-l` (lenient) counts failed expectations as soft, for fault-injection configs. Each mode
 prints `RESULT mode=.. ok=.. soft=.. fail=..`. Cases: `api-*` in `libuvc-test.sh`.
 
