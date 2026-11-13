@@ -171,7 +171,10 @@ in a throwaway VM: kernel enumeration through vhci-hcd, uvcvideo streaming
   controls, multiple devices, fault scenarios.
 - `scripts/vm-usbip-test.sh`: USB/IP against the real kernel, in a VM.
 - `scripts/libuvc-coverage.sh`: the libuvc suite against a gcov-instrumented
-  libuvc, with per-file/function coverage (`scripts/gcov-summary.py`).
+  libuvc, with per-file line, function, branch and (gcc 14+) condition/MC-DC
+  coverage (`scripts/gcov-summary.py`). gcc counts the branches macros expand
+  to, so the branch figure is a guide to untested paths
+  (`--uncovered-branches FILE.c`), not a target.
 - `emuvc selftest`; `emuvc check-frames` (raw captures, e.g. from
   `v4l2-ctl --stream-to`); `emuvc run -- lsusb -v` (diff against the real device).
 

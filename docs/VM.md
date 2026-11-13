@@ -1,8 +1,8 @@
 # Disposable test VM
 
 `scripts/vm-run.sh` runs a command as root inside a throwaway QEMU/KVM VM that
-boots the host's own kernel (`/boot/vmlinuz-linux`) with the host root shared
-read-only. Purpose: USB/IP tests need `vhci-hcd`, `usbip-core`, `uvcvideo`,
+boots an installed kernel (the running one by default) with the host root
+shared read-only. Purpose: USB/IP tests need `vhci-hcd`, `usbip-core`, `uvcvideo`,
 usbfs etc.; those modules must never be loaded on the host, only in the VM.
 
 ## How it works
@@ -28,11 +28,15 @@ dmesg lines are always printed. A run of `true` takes well under a second.
   (all lost at exit). Build artifacts must be built on the host beforehand.
 - No network except loopback; no stdin; command line must fit in ~1 KB (it is
   passed base64 on the kernel cmdline). stdout/stderr are merged (serial).
-- Requires `/boot/vmlinuz-linux` to match `uname -r` (reboot after a kernel
-  upgrade) and the host modules in `/lib/modules/$(uname -r)`.
+- Boots kernel `KVER` (default `uname -r`, modules in `/lib/modules/$KVER`) from
+  `KERNEL` (default `/boot/vmlinuz-$KVER`, else Arch's `/boot/vmlinuz-linux`),
+  which must be that version: reboot after a kernel upgrade, or set `KVER`. Any
+  installed kernel works; CI boots a generic Ubuntu kernel. Needs a static
+  busybox (`BUSYBOX` overrides the one on `PATH`).
 
 ## USB/IP test
 `scripts/vm-usbip-test.sh` boots the VM with `scripts/vm/usbip-guest.sh`:
 `emuvc usbip` on loopback, `emuvc usbip-attach 1-1` into vhci-hcd, then
 lsusb, V4L2 capture through uvcvideo (frames checked with `emuvc
-check-frames`), and libuvc's `stream_test` through the real libusb.
+check-frames`), and libuvc's `stream_test` through the real libusb (allowing two skipped
+frames: over USB/IP frames can arrive in bursts, and libuvc then skips all but the newest).

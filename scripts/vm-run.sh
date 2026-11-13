@@ -1,6 +1,8 @@
 #!/bin/bash
-# Run a command as root inside a throwaway KVM VM booting the host kernel with
-# the host root shared read-only. See docs/VM.md.
+# Run a command as root inside a throwaway KVM VM booting an installed kernel
+# (the running one by default) with the host root shared read-only. See docs/VM.md.
+# KVER=VERSION boots another installed kernel (modules in /lib/modules/VERSION);
+# KERNEL=IMAGE and BUSYBOX=STATIC_BINARY override what is found automatically.
 set -u
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 ROOT=$(dirname "$HERE")
@@ -13,11 +15,19 @@ done
 shift $((OPTIND-1))
 [ $# -ge 1 ] || usage
 
-KVER=$(uname -r)
-KERNEL=/boot/vmlinuz-linux
+KVER=${KVER:-$(uname -r)}
+if [ -z "${KERNEL:-}" ]; then
+    KERNEL=/boot/vmlinuz-$KVER                   # Debian, Ubuntu, Fedora...
+    [ -e "$KERNEL" ] || KERNEL=/boot/vmlinuz-linux # Arch
+fi
 [ -r "$KERNEL" ] || { echo "vm-run: cannot read $KERNEL" >&2; exit 2; }
 if ! file -b "$KERNEL" | grep -q "version $KVER "; then
-    echo "vm-run: $KERNEL does not match running kernel $KVER (reboot after upgrade?)" >&2
+    echo "vm-run: $KERNEL is not kernel $KVER (reboot after an upgrade, or set KVER/KERNEL)" >&2
+    exit 2
+fi
+BUSYBOX=${BUSYBOX:-$(command -v busybox)}
+if [ -z "$BUSYBOX" ] || ! file -bL "$BUSYBOX" | grep -qE 'static(ally|-pie) linked'; then
+    echo "vm-run: needs a statically linked busybox (e.g. busybox-static), or set BUSYBOX" >&2
     exit 2
 fi
 [ -w /dev/kvm ] || { echo "vm-run: /dev/kvm not accessible" >&2; exit 2; }
@@ -25,12 +35,12 @@ fi
 # ---- initramfs (cached; rebuilt when kernel, busybox or init changes) ----
 mkdir -p "$OUT"
 INITRD=$OUT/initramfs.cgz
-STAMP="$KVER $(stat -c '%Y %s' /usr/bin/busybox) $(stat -c '%Y' "$HERE/vm/init" "$0")"
+STAMP="$KVER $(stat -L -c '%Y %s' "$BUSYBOX") $(stat -c '%Y' "$HERE/vm/init" "$0")"
 if [ ! -f "$INITRD" ] || [ "$(cat "$OUT/initramfs.stamp" 2>/dev/null)" != "$STAMP" ]; then
     echo "vm-run: building initramfs..." >&2
     S=$(mktemp -d "$OUT/stage.XXXXXX")
     mkdir -p "$S"/{bin,sbin,proc,sys,dev,mnt,mods,tmp,usr/bin,etc}
-    cp /usr/bin/busybox "$S/bin/busybox"
+    cp -L "$BUSYBOX" "$S/bin/busybox"
     for a in sh mount umount insmod ip ifconfig chroot env base64 cp mkdir hostname \
              dmesg tail cat poweroff sleep echo; do
         ln -sf busybox "$S/bin/$a"
@@ -46,7 +56,7 @@ if [ ! -f "$INITRD" ] || [ "$(cat "$OUT/initramfs.stamp" 2>/dev/null)" != "$STAM
             *)     cp "$path" "$S/mods/$name" ;;
         esac
         echo "$name" >> "$S/mods/list"
-    done < <({ modprobe --show-depends 9pnet_virtio; modprobe --show-depends 9p; } | grep '^insmod' | awk '!seen[$2]++')
+    done < <({ modprobe -S "$KVER" --show-depends 9pnet_virtio; modprobe -S "$KVER" --show-depends 9p; } | grep '^insmod' | awk '!seen[$2]++')
     (cd "$S" && find . | cpio -o -H newc -R 0:0 --quiet | gzip -1) > "$INITRD.tmp"
     mv "$INITRD.tmp" "$INITRD"; echo "$STAMP" > "$OUT/initramfs.stamp"
     rm -rf "$S"

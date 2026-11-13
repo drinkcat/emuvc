@@ -1,0 +1,99 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    - cron: "23 4 * * 1" # weekly: libuvc master moves on its own
+  workflow_dispatch:
+    inputs:
+      libuvc_repo:
+        description: libuvc repository to test
+        default: https://github.com/libuvc/libuvc
+      libuvc_ref:
+        description: Branch, tag or ref (e.g. pull/336/head)
+        default: master
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  # Read by scripts/libuvc-test.sh (also through libuvc-coverage.sh and vm-usbip-test.sh).
+  LIBUVC_REPO: ${{ inputs.libuvc_repo || 'https://github.com/libuvc/libuvc' }}
+  LIBUVC_REF: ${{ inputs.libuvc_ref || 'master' }}
+
+jobs:
+  fmt:
+    name: cargo fmt
+    runs-on: ubuntu-26.04
+    steps:
+      - uses: actions/checkout@v7
+      - run: rustup toolchain install # the version in rust-toolchain.toml
+      - run: cargo fmt --all --check
+
+  rust:
+    name: cargo clippy, test
+    runs-on: ubuntu-26.04
+    steps:
+      - uses: actions/checkout@v7
+      - run: rustup toolchain install # the version in rust-toolchain.toml
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+      - run: cargo test --workspace
+
+  libuvc:
+    name: libuvc suite, coverage
+    runs-on: ubuntu-26.04
+    steps:
+      - uses: actions/checkout@v7
+      - run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends cmake pkg-config libjpeg-dev libusb-1.0-0-dev gcovr
+      - run: rustup toolchain install # the version in rust-toolchain.toml
+      - uses: Swatinem/rust-cache@v2
+      # Suite results and the coverage table go to the job summary, annotated sources to the artifact.
+      - run: scripts/libuvc-coverage.sh --markdown "$GITHUB_STEP_SUMMARY" --html target/libuvc-coverage
+      - uses: actions/upload-artifact@v7
+        if: ${{ !cancelled() }}
+        with:
+          name: libuvc-coverage
+          path: target/libuvc-coverage
+          if-no-files-found: ignore
+      # rust-cache saves all of target/: keep only cargo's outputs there.
+      - if: always()
+        run: rm -rf target/libuvc-* target/vm
+
+  vm:
+    name: USB/IP against the Linux kernel (QEMU)
+    runs-on: ubuntu-26.04
+    steps:
+      - uses: actions/checkout@v7
+      # The VM boots a generic Ubuntu kernel: it has vhci-hcd and uvcvideo, which the
+      # runner's own kernel may lack, and the runner's kernel never loads them.
+      - name: Install QEMU, test tools and a kernel for the VM
+        run: |
+          sudo apt-get update
+          kver=$(apt-cache depends linux-image-generic | sed -n 's/^ *Depends: linux-image-\(.*-generic\)$/\1/p' | head -n1)
+          # The kernel packages linux-image-generic depends on, without firmware: the image, plus
+          # linux-modules-extra (vhci-hcd, uvcvideo) on releases that still split it out (24.04).
+          kpkgs=$(apt-cache depends linux-image-generic | sed -n "s/^ *Depends: \(linux-.*-$kver\)\$/\1/p")
+          sudo apt-get install -y --no-install-recommends qemu-system-x86 busybox-static cpio file zstd \
+            v4l-utils usbutils cmake pkg-config libjpeg-dev libusb-1.0-0-dev $kpkgs
+          sudo chmod a+r "/boot/vmlinuz-$kver"
+          echo "KVER=$kver" >> "$GITHUB_ENV"
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - run: rustup toolchain install # the version in rust-toolchain.toml
+      - uses: Swatinem/rust-cache@v2
+      - run: scripts/vm-usbip-test.sh
+      - if: always()
+        run: rm -rf target/libuvc-* target/vm # see the libuvc job

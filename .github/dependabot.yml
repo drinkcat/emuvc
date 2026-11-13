@@ -1,0 +1,7 @@
+# Proposes updates of the Rust version pinned in rust-toolchain.toml.
+version: 2
+updates:
+  - package-ecosystem: rust-toolchain
+    directory: /
+    schedule:
+      interval: weekly

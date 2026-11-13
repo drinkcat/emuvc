@@ -2,7 +2,6 @@
 name = "emuvc-libusb"
 version.workspace = true
 edition.workspace = true
-rust-version.workspace = true
 license.workspace = true
 description = "LD_PRELOAD-able libusb-1.0 replacement backed by emuvc's emulated devices"
 

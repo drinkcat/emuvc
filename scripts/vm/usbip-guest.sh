@@ -32,8 +32,11 @@ check v4l2-ctl -d /dev/video0 -c brightness=200
 v4l2-ctl -d /dev/video0 -C brightness
 
 step "libuvc through the real libusb (detaches uvcvideo)"
-check "$STREAM_TEST" -f yuyv -s 640x480 -r 30 -n 30 -t 20
-check "$STREAM_TEST" -f mjpeg -s 1280x720 -r 30 -n 30 -t 20
+# Over USB/IP, frames can arrive in bursts. libuvc only hands its callback the newest
+# completed frame, so one that completes while stream_test is still decoding the last
+# one is skipped (seen at MJPEG 1280x720 on CI runners): allow a couple.
+check "$STREAM_TEST" -f yuyv -s 640x480 -r 30 -n 30 -t 20 --max-gaps 2
+check "$STREAM_TEST" -f mjpeg -s 1280x720 -r 30 -n 30 -t 20 --max-gaps 2
 check "$STREAM_TEST" --controls
 
 step "SuperSpeed synthetic camera (vhci SuperSpeed port)"

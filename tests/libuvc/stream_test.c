@@ -191,12 +191,14 @@ static void test_controls(uvc_device_handle_t *h) {
 
 static void usage(void) {
   fprintf(stderr, "usage: stream_test [-d VID:PID] [-f mjpeg|yuyv] [-s WxH] [-r FPS] [-n FRAMES] [-t TIMEOUT_S]\n"
-                  "       [--allow-gaps] [--allow-corrupt] [--expect-open-fail] [--controls] [--list] [--fps-tol PCT]\n");
+                  "       [--allow-gaps] [--max-gaps N] [--allow-corrupt] [--expect-open-fail] [--controls] [--list]\n"
+                  "       [--fps-tol PCT]\n");
 }
 
 int main(int argc, char **argv) {
   int vid = 0, pid = 0, w = 640, h = 480, fps = 30, list = 0, controls = 0;
   int allow_gaps = 0, allow_corrupt = 0, expect_open_fail = 0;
+  long max_gaps = 0;
   double timeout = 20, fps_tol = 0;
   const char *fmt = "mjpeg";
   S.target = 30;
@@ -211,6 +213,7 @@ int main(int argc, char **argv) {
     else if (!strcmp(a, "-t")) timeout = atof(NEXT());
     else if (!strcmp(a, "--fps-tol")) fps_tol = atof(NEXT());
     else if (!strcmp(a, "--allow-gaps")) allow_gaps = 1;
+    else if (!strcmp(a, "--max-gaps")) max_gaps = atol(NEXT());
     else if (!strcmp(a, "--allow-corrupt")) allow_corrupt = 1;
     else if (!strcmp(a, "--expect-open-fail")) expect_open_fail = 1;
     else if (!strcmp(a, "--controls")) controls = 1;
@@ -291,7 +294,9 @@ int main(int argc, char **argv) {
   printf("RESULT frames=%ld corrupt=%ld gaps=%ld max_gap=%ld fps=%.2f\n", frames, corrupt, gaps, max_gap, mfps);
   if (!done) { fprintf(stderr, "FAIL: timeout after %.0fs with %ld/%ld frames\n", timeout, frames, S.target); rc = 1; }
   if (corrupt && !allow_corrupt) { fprintf(stderr, "FAIL: %ld corrupt frames\n", corrupt); rc = 1; }
-  if (gaps && !allow_gaps) { fprintf(stderr, "FAIL: %ld gaps (max %ld)\n", gaps, max_gap); rc = 1; }
+  if (gaps > max_gaps && !allow_gaps) {
+    fprintf(stderr, "FAIL: %ld gaps (largest %ld frames), %ld allowed\n", gaps, max_gap, max_gaps); rc = 1;
+  }
   if (fps_tol > 0 && (mfps < fps * (1 - fps_tol / 100) || mfps > fps * (1 + fps_tol / 100))) {
     fprintf(stderr, "FAIL: fps %.2f not within %.0f%% of %d\n", mfps, fps_tol, fps); rc = 1;
   }
