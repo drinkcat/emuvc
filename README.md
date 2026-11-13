@@ -26,11 +26,21 @@ target/debug/emuvc run -- ../libuvc/build/example
 target/debug/emuvc models               # device catalogue (incl. "synthetic", "lsusb")
 target/debug/emuvc run -d lsusb:bug-report.txt -- ./app   # emulate a camera from `lsusb -v` text
 target/debug/emuvc selftest             # stream every format/frame in-process, check frames
-scripts/libuvc-test.sh                  # libuvc end-to-end suite (builds ../libuvc out of tree)
+scripts/libuvc-test.sh                  # libuvc end-to-end suite (upstream master; LIBUVC_SRC=DIR: a checkout)
 scripts/vm-usbip-test.sh                # USB/IP vs the real kernel (uvcvideo, libusb), in a throwaway VM
 scripts/libuvc-coverage.sh              # libuvc coverage of the suite (gcov)
 cargo test
 ```
+
+CI (`.github/workflows/ci.yml`) runs all of these on every push and pull request, and weekly
+since libuvc master moves on its own. It also requires `cargo fmt --check` and
+`cargo clippy --workspace --all-targets -- -D warnings` to pass. The libuvc coverage table is in
+the job summary and the annotated sources in the `libuvc-coverage` artifact. Run it by hand
+(Actions, "Run workflow") to test another libuvc repository or ref, e.g. `pull/336/head`.
+
+The Rust version is pinned in `rust-toolchain.toml`, which rustup also uses for local builds, so
+a new Rust release changes nothing until its update is merged. Dependabot proposes the updates:
+new clippy lints show up on those pull requests.
 
 ## Configuration
 

@@ -1,10 +1,13 @@
 #!/usr/bin/env bash
 # End-to-end libuvc tests against the emuvc libusb shim. See tests/libuvc/README.md.
 # usage: scripts/libuvc-test.sh [-k PATTERN] [-v]
+#   Tests upstream libuvc master, fetched into target/libuvc-src on every run.
+#   LIBUVC_REPO / LIBUVC_REF select another repository or branch, tag or ref
+#   (e.g. LIBUVC_REF=pull/336/head); LIBUVC_SRC=DIR tests a local checkout as is.
+#   LIBUVC_TEST_MARKDOWN=FILE appends a Markdown report (e.g. $GITHUB_STEP_SUMMARY).
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-LIBUVC_SRC="${LIBUVC_SRC:-$ROOT/../libuvc}"
 # LIBUVC_BUILD / LIBUVC_CMAKE_FLAGS select another libuvc build (e.g. with
 # coverage instrumentation, see scripts/libuvc-coverage.sh).
 BUILD="${LIBUVC_BUILD:-$ROOT/target/libuvc-build}"
@@ -22,10 +25,40 @@ while getopts "k:vh" o; do
   esac
 done
 
-# ---- build ----
-if [ ! -d "$LIBUVC_SRC" ]; then
+# ---- libuvc source ----
+if [ -n "${LIBUVC_SRC:-}" ]; then
+  LIBUVC_DESC="local tree $LIBUVC_SRC"
+  LIBUVC_COMMIT="not a git checkout"
+  [ ! -e "$LIBUVC_SRC/.git" ] || LIBUVC_COMMIT="$(git -C "$LIBUVC_SRC" log -1 --format='%h %s')"
+else
   LIBUVC_SRC="$ROOT/target/libuvc-src"
-  [ -d "$LIBUVC_SRC" ] || git clone --depth 1 https://github.com/libuvc/libuvc "$LIBUVC_SRC"
+  LIBUVC_REPO="${LIBUVC_REPO:-https://github.com/libuvc/libuvc}"
+  LIBUVC_REF="${LIBUVC_REF:-master}"
+  LIBUVC_DESC="$LIBUVC_REPO $LIBUVC_REF"
+  # Always name the clone's repository: with a damaged target/libuvc-src/.git, `git -C`
+  # would fall back to the enclosing emuvc repository and check libuvc out over it.
+  lgit() { git --git-dir="$LIBUVC_SRC/.git" --work-tree="$LIBUVC_SRC" "$@"; }
+  lgit rev-parse --git-dir >/dev/null 2>&1 || { rm -rf "$LIBUVC_SRC"; git init -q "$LIBUVC_SRC"; }
+  if lgit fetch -q --depth 1 "$LIBUVC_REPO" "$LIBUVC_REF"; then
+    lgit checkout -q --force --detach FETCH_HEAD
+  elif lgit rev-parse -q --verify HEAD >/dev/null; then
+    echo "warning: cannot fetch $LIBUVC_DESC, testing the libuvc fetched last" >&2
+    LIBUVC_DESC="$LIBUVC_DESC (fetch failed, older copy)"
+  else
+    echo "cannot fetch $LIBUVC_DESC" >&2; exit 2
+  fi
+  LIBUVC_COMMIT="$(lgit log -1 --format='%h %s')"
+fi
+LIBUVC_SRC="$(cd "$LIBUVC_SRC" && pwd)"
+echo "libuvc: $LIBUVC_DESC at $LIBUVC_COMMIT"
+
+# ---- build ----
+# A build directory belongs to one source tree: start over when the source changes.
+if [ -f "$BUILD/CMakeCache.txt" ] && ! grep -qxF "CMAKE_HOME_DIRECTORY:INTERNAL=$LIBUVC_SRC" "$BUILD/CMakeCache.txt"; then
+  case $BUILD in
+    "$ROOT"/target/*) rm -rf "$BUILD" ;;
+    *) echo "$BUILD was configured for another libuvc source tree" >&2; exit 2 ;;
+  esac
 fi
 (cd "$ROOT" && cargo build -q -p emuvc-libusb)
 # shellcheck disable=SC2086
@@ -45,6 +78,7 @@ cc -g -O1 -Wall -Wextra -o "$OUT/api_test" "$ROOT/tests/libuvc/api_test.c" \
 
 # ---- runner ----
 PASS=0; FAIL=0; INFO=0
+FAILED=(); NOTABLE=() # "name rc" of failed cases, and of informational cases that did not exit 0
 TMP="$(mktemp)"; trap 'rm -f "$TMP"' EXIT
 
 # run_case NAME EXPECT [VAR=val ...] -- stream_test args...
@@ -66,10 +100,12 @@ run_case() {
   local summary; summary=$({ grep -E '^RESULT|^devices:' "$TMP" || true; } | tr '\n' ' ')
   if [ "$expect" = info ]; then
     INFO=$((INFO + 1)); echo "INFO $name rc=$rc (${secs}s) $summary"
+    [ $rc -eq 0 ] || NOTABLE+=("$name $rc")
   elif [ $ok = 1 ]; then
     PASS=$((PASS + 1)); echo "PASS $name (${secs}s) $summary"
   else
     FAIL=$((FAIL + 1)); echo "FAIL $name rc=$rc (${secs}s) $summary"
+    FAILED+=("$name $rc")
   fi
   if [ $VERBOSE = 1 ]; then sed 's/^/    | /' "$TMP"
   elif [ "$expect" = pass ] && [ $ok = 0 ]; then tail -15 "$TMP" | sed 's/^/    | /'
@@ -144,4 +180,30 @@ done
 run_api_each api-shimfail-get_device_descriptor=io $D $V EMUVC_LIBUSB_FAIL=get_device_descriptor=io
 
 echo "summary: $PASS passed, $FAIL failed, $INFO informational"
+
+# ---- Markdown report ----
+# Exit status: 1 failed check, 2 setup error, 3 api_test watchdog (hang), 124 timeout, 128+N signal N.
+status() {
+  case $1 in
+    3) echo "3 (hang, watchdog)" ;; 124) echo "124 (timeout)" ;; 134) echo "134 (SIGABRT)" ;;
+    136) echo "136 (SIGFPE)" ;; 139) echo "139 (SIGSEGV)" ;; *) echo "$1" ;;
+  esac
+}
+table() { # "name rc"...
+  echo "| case | exit status |"; echo "|---|---|"
+  local e; for e in "$@"; do echo "| \`${e% *}\` | $(status "${e##* }") |"; done
+}
+if [ -n "${LIBUVC_TEST_MARKDOWN:-}" ]; then
+  {
+    echo "### libuvc suite: $PASS passed, $FAIL failed, $INFO informational"
+    echo
+    echo "libuvc: $LIBUVC_DESC at \`$LIBUVC_COMMIT\`"
+    echo
+    if [ $FAIL -gt 0 ]; then echo "Failed cases:"; echo; table "${FAILED[@]}"; echo; fi
+    if [ ${#NOTABLE[@]} -gt 0 ]; then
+      echo "<details><summary>${#NOTABLE[@]} informational cases did not exit 0 (libuvc bugs and fault scenarios)</summary>"
+      echo; table "${NOTABLE[@]}"; echo; echo "</details>"; echo
+    fi
+  } >> "$LIBUVC_TEST_MARKDOWN"
+fi
 [ $FAIL -eq 0 ]

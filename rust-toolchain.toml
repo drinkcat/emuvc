@@ -1,0 +1,6 @@
+# The Rust version for CI and local builds alike (rustup reads this file).
+# Dependabot proposes updates (.github/dependabot.yml).
+[toolchain]
+channel = "1.100.0"
+components = ["clippy", "rustfmt"]
+profile = "minimal"
