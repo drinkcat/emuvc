@@ -1,9 +1,16 @@
-# libuvc #1 (Apple iSight): every probe/commit request stalls.
+# libuvc #1 (Apple iSight): every probe/commit request stalls (SET_CUR of VS_PROBE_CONTROL (1) and
+# VS_COMMIT_CONTROL (2) on both streaming interfaces; controls of the units keep working).
 [[device]]
 model = "luxvisions-30c9-0052"
 [[device.fault]]
-on = { control = { request_type = 0x21, selector = 1 } }
+on = { control = { request_type = 0x21, selector = 1, interface = 1 } }
 action = "stall"
 [[device.fault]]
-on = { control = { request_type = 0x21, selector = 2 } }
+on = { control = { request_type = 0x21, selector = 2, interface = 1 } }
+action = "stall"
+[[device.fault]]
+on = { control = { request_type = 0x21, selector = 1, interface = 3 } }
+action = "stall"
+[[device.fault]]
+on = { control = { request_type = 0x21, selector = 2, interface = 3 } }
 action = "stall"

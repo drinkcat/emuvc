@@ -9,8 +9,17 @@ Runs libuvc (built out of tree, never modified) against the emuvc libusb shim
   fetched last). `LIBUVC_REPO` / `LIBUVC_REF` select another repository or branch, tag or ref
   (e.g. `LIBUVC_REF=pull/336/head`); `LIBUVC_SRC=DIR` tests a local checkout as is.
   Needs cmake, a C compiler, libjpeg, libusb-1.0 headers.
-* `LIBUVC_TEST_MARKDOWN=FILE` appends a Markdown report: counts, failed cases, and the
-  informational cases that did not exit 0 (crashes, hangs: mostly libuvc bugs).
+* Every case has one of three expected outcomes:
+  * `pass`: must work. `FAIL` is a regression, in emuvc or in libuvc.
+  * `robust`: a device too broken to work, or an injected fault. libuvc may fail, but only
+    cleanly. A crash, hang or sanitizer report is a `FAIL`.
+  * `bug`: a known libuvc bug, with a reference (`BUG=`). The case checks the correct behaviour.
+    Today it reports `XFAIL` and doesn't fail the suite. Once libuvc gets it right, it reports
+    `XPASS`, and the case should become `pass`.
+
+  The summary ends with the list of known libuvc bugs: what should be fixed in libuvc.
+* `LIBUVC_TEST_MARKDOWN=FILE` appends a Markdown report: counts, failed cases, and the known
+  libuvc bugs (still failing, or passing now).
 * `stream_test.c` is the client: it streams, decodes the frame stamp
   (`crates/emuvc-video/src/stamp.rs`) and reports
   `RESULT frames=.. corrupt=.. gaps=.. max_gap=.. skipped=.. fps=..` (exit 0 ok, 1 failed, 2 setup/usage error).
@@ -20,9 +29,10 @@ Runs libuvc (built out of tree, never modified) against the emuvc libusb shim
   `--controls` exercises brightness/AE mode; `--list` lists devices; `--fps-tol PCT` checks the rate;
   `--cb-sleep MS` makes the callback slow;
   `--max-gaps N` tolerates N gaps (`--allow-gaps`: any number).
-* `configs/*.toml` are emulator configs for the fault/quirk cases. `info` cases only report an
-  outcome and never fail the suite. `EXPECT_RC=N` makes a
+* `configs/*.toml` are emulator configs for the fault/quirk cases. `EXPECT_RC=N` makes a
   `pass` case expect exit N, for checked failures (stall-get-def: libuvc must report PIPE).
+  `issue-*.toml` reproduce libuvc issues: libuvc handles some now (`pass`), some devices are
+  too broken to stream (`robust`), and the rest are known bugs (`bug`).
   `desc-*.toml` patch the synthetic camera's descriptors (`[[device.patch]]`) with a few structural
   errors a fuzzer rarely produces (unknown subtype, reordering, wrong counts, a duplicate frame);
   the device keeps working from its original descriptors.
@@ -61,8 +71,8 @@ needs the libuvc source tree, as `libuvc-test.sh` already does.
 
 runs the same suite with libuvc and the test programs built with ASan and UBSan
 (`target/libuvc-asan`). The Rust shim is not instrumented, and libasan is preloaded ahead of
-it. A sanitizer report, leaks included, makes a case exit 86: `pass` cases fail, `info` cases
-list it as `86 (sanitizer)`. This is a separate build from the coverage one. Both sets of flags work together,
+it. A sanitizer report, leaks included, makes a case exit 86, which fails it whatever its
+expected outcome (unless `BUG_CRASH=1` marks a known bug as such a crash). This is a separate build from the coverage one. Both sets of flags work together,
 but a case stopped by a sanitizer never writes its `.gcda`, and the ASan slowdown does not
 belong in the coverage run. Leak stacks stop at the shim's frames unless
 `ASAN_OPTIONS=fast_unwind_on_malloc=0` is set.

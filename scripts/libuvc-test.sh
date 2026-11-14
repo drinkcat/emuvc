@@ -80,14 +80,20 @@ cc -g -O1 -Wall -Wextra ${LIBUVC_TEST_CFLAGS:-} -o "$OUT/api_test" "$ROOT/tests/
   $(pkg-config --cflags --libs libjpeg libusb-1.0) -lpthread
 
 # ---- runner ----
-PASS=0; FAIL=0; INFO=0
-FAILED=(); NOTABLE=() # "name rc" of failed cases, and of informational cases that did not exit 0
+PASS=0; FAIL=0; XFAIL=0
+FAILED=() # "name rc" of failed cases
+BUGS=(); FIXED=() # "name|reference" of known libuvc bugs: still failing / passing now
 TMP="$(mktemp)"; trap 'rm -f "$TMP"' EXIT
 
 # run_case NAME EXPECT [VAR=val ...] -- stream_test args...
-#   EXPECT: pass  = must exit 0;  info = report outcome only, never fails the suite
-#   Extra checks on output can be done by the caller via CHECK_RE (grep -E on output).
-#   EXPECT_RC=N: a pass case must exit N instead of 0 (an expected, checked failure).
+#   EXPECT: pass   must exit 0 (EXPECT_RC=N: exit N, an expected, checked failure) and print a line
+#                  matching CHECK_RE (grep -E on the output) if set.
+#           robust a misbehaving device or an injected fault: failing cleanly (exit 1) is as good as
+#                  working. Crashes, hangs, sanitizer reports and setup errors fail. CHECK_RE applies.
+#           bug    a known libuvc bug, BUG="reference: what is wrong". The case checks the correct
+#                  behaviour like a pass case. Failing cleanly is XFAIL (still broken, the suite
+#                  passes); passing is XPASS (fixed upstream: make it a pass case). Crashes, hangs
+#                  and sanitizer reports fail, unless BUG_CRASH=1 (the bug is the crash).
 run_case() {
   local name=$1 expect=$2; shift 2
   local envs=()
@@ -99,25 +105,31 @@ run_case() {
   # device drops from host drops when a case fails.
   # timeout stays outside LD_PRELOAD: only the test process gets the shim (and libasan).
   timeout 60 env LD_PRELOAD="${LIBUVC_PRELOAD:+$LIBUVC_PRELOAD:}$SHIM" EMUVC_LOG="${EMUVC_LOG:-emuvc_uvc::stream=info}" "${envs[@]}" "$OUT/${TEST_BIN:-stream_test}" "$@" >"$TMP" 2>&1 || rc=$?
-  local secs=$((SECONDS - t0)) ok=1
-  [ $rc -eq "${EXPECT_RC:-0}" ] || ok=0
-  if [ -n "${CHECK_RE:-}" ] && ! grep -Eq "$CHECK_RE" "$TMP"; then ok=0; echo "(missing output /$CHECK_RE/)" >>"$TMP"; fi
+  local secs=$((SECONDS - t0)) rc_ok=0 re_ok=1 clean=0 verdict=FAIL
+  [ $rc -eq "${EXPECT_RC:-0}" ] && rc_ok=1
+  if [ -n "${CHECK_RE:-}" ] && ! grep -Eq "$CHECK_RE" "$TMP"; then re_ok=0; echo "(missing output /$CHECK_RE/)" >>"$TMP"; fi
+  case $rc in 0|1) clean=1 ;; esac
+  case $expect in
+    pass) [ $rc_ok$re_ok = 11 ] && verdict=PASS ;;
+    robust) [ $clean$re_ok = 11 ] && verdict=PASS ;;
+    bug)
+      if [ $rc_ok$re_ok = 11 ]; then verdict=XPASS
+      elif [ $clean = 1 ] || [ -n "${BUG_CRASH:-}" ]; then verdict=XFAIL; fi ;;
+    *) echo "run_case $name: bad EXPECT $expect" >&2; exit 2 ;;
+  esac
   local summary; summary=$({ grep -E '^RESULT|^devices:' "$TMP" || true; } | tr '\n' ' ')
-  if [ "$expect" = info ]; then
-    INFO=$((INFO + 1)); echo "INFO $name rc=$rc (${secs}s) $summary"
-    [ $rc -eq 0 ] || NOTABLE+=("$name $rc")
-  elif [ $ok = 1 ]; then
-    PASS=$((PASS + 1)); echo "PASS $name (${secs}s) $summary"
-  else
-    FAIL=$((FAIL + 1)); echo "FAIL $name rc=$rc (${secs}s) $summary"
-    FAILED+=("$name $rc")
-  fi
+  case $verdict in
+    PASS) PASS=$((PASS + 1)); echo "PASS $name (${secs}s) $summary" ;;
+    XPASS) PASS=$((PASS + 1)); FIXED+=("$name|$BUG"); echo "XPASS $name (${secs}s) [fixed? $BUG] $summary" ;;
+    XFAIL) XFAIL=$((XFAIL + 1)); BUGS+=("$name|$BUG"); echo "XFAIL $name rc=$rc (${secs}s) [$BUG]" ;;
+    FAIL) FAIL=$((FAIL + 1)); FAILED+=("$name $rc"); echo "FAIL $name rc=$rc (${secs}s) $summary" ;;
+  esac
   if [ $VERBOSE = 1 ]; then sed 's/^/    | /' "$TMP"
-  elif [ "$expect" = pass ] && [ $ok = 0 ]; then tail -15 "$TMP" | sed 's/^/    | /'
-  elif [ "$expect" = info ] && [ "${INFO_LINES:-4}" != 0 ]; then { grep -vE '^RESULT' "$TMP" || true; } | tail -"${INFO_LINES:-4}" | sed 's/^/    | /'; fi
-  CHECK_RE=""; EXPECT_RC=""; return 0
+  elif [ $verdict = FAIL ]; then tail -15 "$TMP" | sed 's/^/    | /'
+  elif [ $verdict = XFAIL ]; then { grep -E '^ *FAIL|^uvc_' "$TMP" || true; } | head -3 | sed 's/^/    | /'; fi
+  CHECK_RE=""; EXPECT_RC=""; BUG=""; BUG_CRASH=""; return 0
 }
-CHECK_RE=""; EXPECT_RC=""
+CHECK_RE=""; EXPECT_RC=""; BUG=""; BUG_CRASH=""
 
 D=EMUVC_DEVICE=luxvisions-30c9-0052
 V=EMUVC_CLOCK=virtual
@@ -171,21 +183,35 @@ for c in desc-unknown-vs-subtype desc-color-before-frames desc-num-frames-over d
   CHECK_RE='^RESULT mode=wrap ' run_api "api-$c" EMUVC_CONFIG="$CFG/$c.toml" $V -- -m 1500 all
 done
 
-# Issue reproductions: libuvc is expected to fail on some of these, so every mode runs in its own
-# process and only the outcome is reported (rc=139/136 = libuvc crashed, a finding, never a hang).
+# Issue reproductions (configs/issue-*.toml) libuvc handles now: all modes, strict.
+for c in issue-193-zero-packet-alt issue-276-get-max-zero-payload issue-282-payload-changes issue-336-step-zero; do
+  CHECK_RE='^RESULT mode=wrap ' run_api "api-$c" EMUVC_CONFIG="$CFG/$c.toml" $V -- -m 1500 all
+done
+
+# Devices too broken to stream, injected faults (robust): libuvc may fail, but cleanly. Every mode
+# runs in its own process, so that a crash in one doesn't hide the others.
 API_MODES="info controls convert poll still multi status negotiate wrap"
-run_api_each() { # NAME [VAR=val ...] -- (modes run one by one)
+run_api_robust() { # NAME [VAR=val ...]
   local name=$1; shift
   for m in $API_MODES; do
-    INFO_LINES=0 TEST_BIN=api_test run_case "$name/$m" info "$@" -- -l "$m"
+    CHECK_RE="^RESULT mode=$m " TEST_BIN=api_test run_case "$name/$m" robust "$@" -- "$m"
   done
 }
-for c in "$CFG"/issue-*.toml; do
-  run_api_each "api-$(basename "$c" .toml)" EMUVC_CONFIG="$c" $V
+# every probe/commit stalls; the device rejects the probe length its UVC version requires; the first
+# frames are truncated (libuvc hands them to the callback as they are)
+for c in issue-1-probe-stall issue-strict-probe-len issue-garbage-first-frames; do
+  run_api_robust "api-$c" EMUVC_CONFIG="$CFG/$c.toml" $V
 done
-# finding: libuvc rejects the whole device (UVC_ERROR_INVALID_DEVICE) when one frame descriptor's
-# interval list overruns its bLength: safe, but every other format becomes unusable too
-run_api_each api-desc-interval-count-over EMUVC_CONFIG="$CFG/desc-interval-count-over.toml" $V
+
+# Known libuvc bugs (bug): the expected behaviour, XFAIL until libuvc is fixed.
+run_api_bug() { # NAME [VAR=val ...]: all modes, strict
+  local name=$1; shift
+  CHECK_RE='^RESULT mode=wrap ' TEST_BIN=api_test run_case "$name" bug "$@" -- -m 1500 all
+}
+BUG="libuvc#348: uvc_open rejects an encoding unit (unknown VC subtype)" \
+  run_api_bug api-issue-encoding-unit EMUVC_CONFIG="$CFG/issue-encoding-unit.toml" $V
+BUG="one frame descriptor's interval list overruns its bLength: libuvc rejects the whole device" \
+  run_api_bug api-desc-interval-count-over EMUVC_CONFIG="$CFG/desc-interval-count-over.toml" $V
 
 # Shim-level libusb failures (EMUVC_LIBUSB_FAIL): libuvc's error paths must neither crash nor hang.
 # FAULT[:mode] ; default mode is every mode in one process (lenient).
@@ -196,11 +222,17 @@ for f in get_config_descriptor=io get_active_config_descriptor=io open=access \
          get_string_descriptor_ascii=io init_context=no_mem set_configuration=io wrap_sys_device=io; do
   CHECK_RE='^RESULT mode=' run_api "api-shimfail-${f//[^a-z_0-9=-]/_}" $D $V "EMUVC_LIBUSB_FAIL=$f" -- -l all
 done
-# finding: uvc_print_diag ignores a uvc_get_device_descriptor failure and prints an uninitialised pointer;
-# uvc_get_device_list leaks the config descriptor of a device whose descriptor it cannot read (ASan).
-run_api_each api-shimfail-get_device_descriptor=io $D $V EMUVC_LIBUSB_FAIL=get_device_descriptor=io
+# No device descriptor: libuvc finds no device. Mode by mode, as uvc_print_diag used to print an
+# uninitialised pointer here.
+run_api_robust api-shimfail-get_device_descriptor=io $D $V EMUVC_LIBUSB_FAIL=get_device_descriptor=io
 
-echo "summary: $PASS passed, $FAIL failed, $INFO informational"
+echo "summary: $PASS passed, $FAIL failed, $XFAIL known libuvc bugs (XFAIL), ${#FIXED[@]} fixed upstream (XPASS)"
+if [ ${#BUGS[@]} -gt 0 ]; then
+  echo "known libuvc bugs:"; printf '  %s\n' "${BUGS[@]/|/: }"
+fi
+if [ ${#FIXED[@]} -gt 0 ]; then
+  echo "fixed upstream? (XPASS: make these pass cases)"; printf '  %s\n' "${FIXED[@]/|/: }"
+fi
 
 # ---- Markdown report ----
 # Exit status: 1 failed check, 2 setup error, 3 api_test watchdog (hang), 86 sanitizer error
@@ -217,14 +249,21 @@ table() { # "name rc"...
 }
 if [ -n "${LIBUVC_TEST_MARKDOWN:-}" ]; then
   {
-    echo "### libuvc suite${LIBUVC_TEST_NAME:+ ($LIBUVC_TEST_NAME)}: $PASS passed, $FAIL failed, $INFO informational"
+    echo "### libuvc suite${LIBUVC_TEST_NAME:+ ($LIBUVC_TEST_NAME)}: $PASS passed, $FAIL failed, $XFAIL known libuvc bugs, ${#FIXED[@]} fixed upstream"
     echo
     echo "libuvc: $LIBUVC_DESC at \`$LIBUVC_COMMIT\`"
     echo
     if [ $FAIL -gt 0 ]; then echo "Failed cases:"; echo; table "${FAILED[@]}"; echo; fi
-    if [ ${#NOTABLE[@]} -gt 0 ]; then
-      echo "<details><summary>${#NOTABLE[@]} informational cases did not exit 0 (libuvc bugs and fault scenarios)</summary>"
-      echo; table "${NOTABLE[@]}"; echo; echo "</details>"; echo
+    bugs() { # "name|reference"...
+      echo "| case | bug |"; echo "|---|---|"
+      local e; for e in "$@"; do echo "| \`${e%%|*}\` | ${e#*|} |"; done
+    }
+    if [ ${#FIXED[@]} -gt 0 ]; then
+      echo "Known libuvc bugs that pass now (XPASS, fixed upstream? make them pass cases):"
+      echo; bugs "${FIXED[@]}"; echo
+    fi
+    if [ ${#BUGS[@]} -gt 0 ]; then
+      echo "Known libuvc bugs, still failing (XFAIL):"; echo; bugs "${BUGS[@]}"; echo
     fi
   } >> "$LIBUVC_TEST_MARKDOWN"
 fi
