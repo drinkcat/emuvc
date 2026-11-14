@@ -271,6 +271,14 @@ impl UvcFunction {
         self.controls.get_mut(&(entity, selector))
     }
 
+    /// For a function without a status interrupt endpoint: no control can be autoupdate or
+    /// asynchronous, since neither can be reported (UVC 1.5 2.4.2.2).
+    pub fn without_status_endpoint(&mut self) {
+        for c in self.controls.values_mut() {
+            c.info &= !(INFO_AUTOUPDATE | INFO_ASYNC);
+        }
+    }
+
     /// Adds or replaces a control (e.g. to give an XU control its real size).
     pub fn set_control(&mut self, entity: u8, selector: u8, c: Control) {
         self.controls.insert((entity, selector), c);

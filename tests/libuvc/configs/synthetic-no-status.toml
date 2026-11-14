@@ -1,0 +1,4 @@
+# Synthetic camera without the optional VideoControl interrupt endpoint (no status packets).
+[[device]]
+model = "synthetic"
+synthetic = { status_endpoint = false }
