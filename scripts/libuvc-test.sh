@@ -191,9 +191,49 @@ for c in "$CFG"/synthetic-*.toml; do
 done
 
 # Malformed descriptors (configs/desc-*.toml, emuvc_devices::patch) the host must cope with: all modes, strict.
-for c in desc-unknown-vs-subtype desc-color-before-frames desc-num-frames-over desc-duplicate-frame; do
+for c in desc-unknown-vs-subtype desc-color-before-frames desc-num-frames-over desc-duplicate-frame desc-vc-vendor-descriptor \
+         desc-bcduvc-010a desc-unknown-guid desc-still-compression; do
   CHECK_RE='^RESULT mode=wrap ' run_api "api-$c" EMUVC_CONFIG="$CFG/$c.toml" $V -- -m 1500 all
 done
+
+# Descriptor validation (configs/desc-validation.toml, one camera per broken length/count/order, by PID):
+# libuvc must reject each with UVC_ERROR_INVALID_DEVICE (-50), without crashing or reading past it.
+while read -r pid name; do
+  CHECK_RE='open=-50 ' TEST_BIN=api_test run_case "desc-$name" pass EMUVC_CONFIG="$CFG/desc-validation.toml" $V -- -d "1209:$pid" open
+done <<'EOF'
+0101 vc-header-short
+0102 input-terminal-short
+0103 input-terminal-controls-over
+0104 processing-unit-controls-over
+0105 selector-unit-short
+0106 extension-unit-short
+0107 extension-unit-pins-over
+0108 extension-unit-controls-over
+0109 vc-descriptor-tiny
+010a vc-interface-number-over
+010b vs-input-header-short
+010c uncompressed-format-short
+010d mjpeg-format-short
+010e frame-based-format-short
+010f mjpeg-frame-short
+0110 mjpeg-frame-continuous-short
+0111 frame-based-frame-short
+0112 frame-based-frame-continuous-short
+0113 frame-based-frame-intervals-over
+0114 frame-before-format
+0115 frame-based-frame-before-format
+0116 still-before-format
+0117 still-short
+0118 still-sizes-over
+0119 still-compression-over
+EOF
+# libuvc skips 199e:8201-8208 (The Imaging Source) when listing devices.
+CHECK_RE='devices=0 ' run_api api-skip-199e-8201 EMUVC_CONFIG="$CFG/skip-199e-8201.toml" $V -- open
+# Valid descriptors libuvc rejects (uvcvideo takes both): the camera must open.
+BUG="8-byte input terminal (composite connector): uvc_parse_vc_input_terminal checks the camera terminal size before the type, the camera is refused" \
+  CHECK_RE='open=0 ' TEST_BIN=api_test run_case api-desc-composite-input bug EMUVC_CONFIG="$CFG/desc-composite-input.toml" $V -- open
+BUG="bcdUVC 0x0101: uvc_open fails with UVC_ERROR_NOT_SUPPORTED" \
+  CHECK_RE='open=0 ' TEST_BIN=api_test run_case api-desc-bcduvc-0101 bug EMUVC_CONFIG="$CFG/desc-bcduvc-0101.toml" $V -- open
 
 # Asynchronous controls (UVC 1.5 2.4.4): completions and a Control Failure Change reach the status callback.
 CHECK_RE='async_ok=[2-9] async_failed=1' run_api api-async-completion EMUVC_CONFIG="$CFG/synthetic-async.toml" -- async
@@ -201,6 +241,16 @@ CHECK_RE='async_ok=[2-9] async_failed=1' run_api api-async-completion EMUVC_CONF
 # (libuvc forwards the reserved bAttribute 9 to the callback: counted as other=1, not checked.)
 CHECK_RE='button_events=2 value=[0-9]+ info=[0-9]+ failure=1 min=1 max=1 ' \
   run_api api-status-edge EMUVC_CONFIG="$CFG/status-edge.toml" -- -m 1000 status
+
+# uvc_exit() with a device left open. The bug only shows under scripts/libuvc-asan.sh (LIBUVC_PRELOAD):
+# uvc_exit() closes the devices with DL_FOREACH while uvc_close() frees each one, a heap-use-after-free
+# (DL_FOREACH_SAFE fixes it). Without ASan, it only has to exit cleanly.
+if [ -n "${LIBUVC_PRELOAD:-}" ]; then
+  BUG="uvc_exit: heap-use-after-free closing the devices left open (DL_FOREACH, not _SAFE)" BUG_CRASH=1 \
+    TEST_BIN=api_test run_case api-exit-open bug EMUVC_CONFIG="$CFG/synthetic-default.toml" $V -- -x open
+else
+  TEST_BIN=api_test run_case api-exit-open pass EMUVC_CONFIG="$CFG/synthetic-default.toml" $V -- -x open
+fi
 
 # Reshaped extension unit controls ([[device.control]]): libuvc sees the configured size and GET_INFO.
 CHECK_RE='XU 5/1 len=33 info=0x01' run_api api-xu-config EMUVC_CONFIG="$CFG/synthetic-xu.toml" -- controls

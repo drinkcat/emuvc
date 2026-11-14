@@ -1,0 +1,9 @@
+# Synthetic UVC 1.0 camera whose VC header says bcdUVC 0x0101, a version no spec defines. uvcvideo
+# takes any value (it only chooses the probe/commit length and processing unit layout from it).
+[[device]]
+model = "synthetic"
+synthetic = { uvc = "1.0" }
+
+[[device.patch]]
+target = { iface = "vc", subtype = 0x01 }  # VC header
+set = [[3, 0x01]]                          # bcdUVC 0x0100 -> 0x0101

@@ -1,0 +1,4 @@
+# A camera with The Imaging Source's VID and a PID libuvc's device list skips (199e:8201-8208).
+[[device]]
+model = "synthetic"
+synthetic = { vendor_id = 0x199e, product_id = 0x8201 }

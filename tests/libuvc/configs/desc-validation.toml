@@ -1,0 +1,210 @@
+# Descriptor validation: one synthetic camera per malformed field, told apart by idProduct
+# (1209:01xx). Each breaks one length or count check of the descriptor parser, or puts a frame
+# before any format. Hosts must reject the camera without reading past a descriptor (libuvc:
+# uvc_open fails with UVC_ERROR_INVALID_DEVICE). libuvc-test.sh runs `api_test -d 1209:01xx open`
+# on each (cases desc-<name>). The devices themselves work from their original descriptors
+# (emuvc_devices::patch). Offsets: synthetic UVC 1.5 camera, see `emuvc descriptors synthetic`.
+# Descriptors that overrun the configuration are left out: libusb rejects the configuration
+# before a host sees it.
+
+# 0101 vc-header-short: VC header cut to 11 bytes, shorter than its fixed part (12)
+[[device]]
+model = "synthetic"
+synthetic = { product_id = 0x0101 }
+[[device.patch]]
+target = { iface = "vc", subtype = 0x01 }
+truncate = 11
+
+# 0102 input-terminal-short: camera terminal cut to 14 bytes (15)
+[[device]]
+model = "synthetic"
+synthetic = { product_id = 0x0102 }
+[[device.patch]]
+target = { iface = "vc", subtype = 0x02 }
+truncate = 14
+
+# 0103 input-terminal-controls-over: camera terminal bControlSize 4: bmControls overruns bLength
+[[device]]
+model = "synthetic"
+synthetic = { product_id = 0x0103 }
+[[device.patch]]
+target = { iface = "vc", subtype = 0x02 }
+set = [[14, 4]]
+
+# 0104 processing-unit-controls-over: processing unit bControlSize 6: bmControls overruns bLength
+[[device]]
+model = "synthetic"
+synthetic = { product_id = 0x0104 }
+[[device.patch]]
+target = { iface = "vc", subtype = 0x05 }
+set = [[7, 6]]
+
+# 0105 selector-unit-short: selector unit cut to 3 bytes: no bNrInPins
+[[device]]
+model = "synthetic"
+synthetic = { product_id = 0x0105 }
+[[device.patch]]
+target = { iface = "vc", subtype = 0x04 }
+truncate = 3
+
+# 0106 extension-unit-short: extension unit cut to 21 bytes (22)
+[[device]]
+model = "synthetic"
+synthetic = { product_id = 0x0106 }
+[[device.patch]]
+target = { iface = "vc", subtype = 0x06 }
+truncate = 21
+
+# 0107 extension-unit-pins-over: extension unit bNrInPins 4: baSourceID overruns bLength
+[[device]]
+model = "synthetic"
+synthetic = { product_id = 0x0107 }
+[[device.patch]]
+target = { iface = "vc", subtype = 0x06 }
+set = [[21, 4]]
+
+# 0108 extension-unit-controls-over: extension unit bControlSize 4: bmControls overruns bLength
+[[device]]
+model = "synthetic"
+synthetic = { product_id = 0x0108 }
+[[device.patch]]
+target = { iface = "vc", subtype = 0x06 }
+set = [[23, 4]]
+
+# 0109 vc-descriptor-tiny: selector unit cut to 2 bytes (no bDescriptorSubtype), between others
+[[device]]
+model = "synthetic"
+synthetic = { product_id = 0x0109 }
+[[device.patch]]
+target = { iface = "vc", subtype = 0x04 }
+truncate = 2
+
+# 010a vc-interface-number-over: VC header baInterfaceNr(1) = 7: no such interface
+[[device]]
+model = "synthetic"
+synthetic = { product_id = 0x010a }
+[[device.patch]]
+target = { iface = "vc", subtype = 0x01 }
+set = [[12, 7]]
+
+# 010b vs-input-header-short: VS input header bLength 9, shorter than its fixed part (10)
+[[device]]
+model = "synthetic"
+synthetic = { product_id = 0x010b }
+[[device.patch]]
+target = { iface = "vs", subtype = 0x01 }
+set = [[0, 9]]
+
+# 010c uncompressed-format-short: uncompressed format cut to 26 bytes (27)
+[[device]]
+model = "synthetic"
+synthetic = { product_id = 0x010c }
+[[device.patch]]
+target = { iface = "vs", subtype = 0x04 }
+truncate = 26
+
+# 010d mjpeg-format-short: MJPEG format cut to 10 bytes (11)
+[[device]]
+model = "synthetic"
+synthetic = { product_id = 0x010d }
+[[device.patch]]
+target = { iface = "vs", subtype = 0x06 }
+truncate = 10
+
+# 010e frame-based-format-short: frame-based format cut to 27 bytes (28)
+[[device]]
+model = "synthetic"
+synthetic = { product_id = 0x010e }
+[[device.patch]]
+target = { iface = "vs", subtype = 0x10 }
+truncate = 27
+
+# 010f mjpeg-frame-short: MJPEG frame cut to 25 bytes: no bFrameIntervalType
+[[device]]
+model = "synthetic"
+synthetic = { product_id = 0x010f }
+[[device.patch]]
+target = { iface = "vs", subtype = 0x07 }
+truncate = 25
+
+# 0110 mjpeg-frame-continuous-short: MJPEG frame with continuous intervals (bFrameIntervalType 0) cut to 37 bytes (38)
+[[device]]
+model = "synthetic"
+synthetic = { product_id = 0x0110 }
+[[device.patch]]
+target = { iface = "vs", subtype = 0x07 }
+truncate = 37
+set = [[25, 0]]
+
+# 0111 frame-based-frame-short: frame-based frame cut to 21 bytes: no bFrameIntervalType
+[[device]]
+model = "synthetic"
+synthetic = { product_id = 0x0111 }
+[[device.patch]]
+target = { iface = "vs", subtype = 0x11 }
+truncate = 21
+
+# 0112 frame-based-frame-continuous-short: frame-based frame, continuous intervals, cut to 33 bytes (34)
+[[device]]
+model = "synthetic"
+synthetic = { product_id = 0x0112 }
+[[device.patch]]
+target = { iface = "vs", subtype = 0x11 }
+truncate = 33
+set = [[21, 0]]
+
+# 0113 frame-based-frame-intervals-over: frame-based frame bFrameIntervalType 9: the interval list overruns bLength
+[[device]]
+model = "synthetic"
+synthetic = { product_id = 0x0113 }
+[[device.patch]]
+target = { iface = "vs", subtype = 0x11 }
+set = [[21, 9]]
+
+# 0114 frame-before-format: first MJPEG frame before any format descriptor
+[[device]]
+model = "synthetic"
+synthetic = { product_id = 0x0114 }
+[[device.patch]]
+target = { iface = "vs", subtype = 0x07 }
+move_before = { iface = "vs", subtype = 0x06 }
+
+# 0115 frame-based-frame-before-format: first frame-based frame before any format descriptor
+[[device]]
+model = "synthetic"
+synthetic = { product_id = 0x0115 }
+[[device.patch]]
+target = { iface = "vs", subtype = 0x11 }
+move_before = { iface = "vs", subtype = 0x06 }
+
+# 0116 still-before-format: first still image frame before any format descriptor
+[[device]]
+model = "synthetic"
+synthetic = { product_id = 0x0116 }
+[[device.patch]]
+target = { iface = "vs", subtype = 0x03 }
+move_before = { iface = "vs", subtype = 0x06 }
+
+# 0117 still-short: still image frame cut to 4 bytes: no bNumImageSizePatterns
+[[device]]
+model = "synthetic"
+synthetic = { product_id = 0x0117 }
+[[device.patch]]
+target = { iface = "vs", subtype = 0x03 }
+truncate = 4
+
+# 0118 still-sizes-over: still image frame bNumImageSizePatterns 9: the size list overruns bLength
+[[device]]
+model = "synthetic"
+synthetic = { product_id = 0x0118 }
+[[device.patch]]
+target = { iface = "vs", subtype = 0x03 }
+set = [[4, 9]]
+
+# 0119 still-compression-over: still image frame bNumCompressionPattern 5: the list overruns bLength
+[[device]]
+model = "synthetic"
+synthetic = { product_id = 0x0119 }
+[[device.patch]]
+target = { iface = "vs", subtype = 0x03 }
+set = [[17, 5]]
