@@ -28,6 +28,13 @@ what the device offers through libuvc itself (formats, units, extension units, s
 patterns, streaming interfaces), so richer emulated devices raise coverage without code
 changes. Calls a device cannot serve are counted as "soft"; failures are crashes/hangs
 (45 s SIGALRM watchdog), inconsistent data, or an API accepting what it must reject.
+`controls` also holds the device to the spec rules it advertises. For each single-value camera terminal
+and processing unit control it checks GET_INFO and the STALL with the right Request Error Code:
+out of range (0x04) outside GET_MIN/GET_MAX, invalid value within range (0x08) off the GET_RES
+grid, and wrong state (0x02) while an auto mode disables the control. It also checks that auto
+switches (focus, white balance, hue, contrast, every AE mode in GET_RES) disable and re-enable
+their manual controls. `still` checks that a method 2 trigger yields exactly one frame of the
+still size before video frames resume.
 `-l` (lenient) counts failed expectations as soft, for fault-injection configs. Each mode
 prints `RESULT mode=.. ok=.. soft=.. fail=..`. Cases: `api-*` in `libuvc-test.sh`.
 
