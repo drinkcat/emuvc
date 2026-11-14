@@ -13,9 +13,13 @@ Runs libuvc (built out of tree, never modified) against the emuvc libusb shim
   informational cases that did not exit 0 (crashes, hangs: mostly libuvc bugs).
 * `stream_test.c` is the client: it streams, decodes the frame stamp
   (`crates/emuvc-video/src/stamp.rs`) and reports
-  `RESULT frames=.. corrupt=.. gaps=.. max_gap=.. fps=..` (exit 0 ok, 1 failed, 2 setup/usage error).
+  `RESULT frames=.. corrupt=.. gaps=.. max_gap=.. skipped=.. fps=..` (exit 0 ok, 1 failed, 2 setup/usage error).
+  A gap is a frame lost before libuvc assembled it (device, transport, payload parsing); `skipped`
+  counts frames libuvc assembled but overwrote before its callback thread ran (host scheduling,
+  reported only). `frame->sequence` tells the two apart.
   `--controls` exercises brightness/AE mode; `--list` lists devices; `--fps-tol PCT` checks the rate;
-  `--max-gaps N` tolerates N skipped frames (`--allow-gaps`: any number).
+  `--cb-sleep MS` makes the callback slow;
+  `--max-gaps N` tolerates N gaps (`--allow-gaps`: any number).
 * `configs/*.toml` are emulator configs for the fault/quirk cases. `info` cases only report an
   outcome and never fail the suite. `EXPECT_RC=N` makes a
   `pass` case expect exit N, for checked failures (stall-get-def: libuvc must report PIPE).

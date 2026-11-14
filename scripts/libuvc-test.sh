@@ -126,6 +126,9 @@ run_case mjpeg-1080p pass $D -- -f mjpeg -s 1920x1080 -r 30 -n 60 -t 15 --fps-to
 run_case yuyv-vga pass $D -- -f yuyv -s 640x480 -r 30 -n 60 -t 15
 run_case yuyv-1080p pass $D -- -f yuyv -s 1920x1080 -r 5 -n 10 -t 20
 run_case virtual-clock pass $D $V -- -f mjpeg -s 640x480 -r 30 -n 300 -t 9
+# A consumer slower than the frame rate: libuvc overwrites frames its callback thread has not taken
+# yet. Those must count as skipped, not as gaps (which stay at 0 allowed).
+CHECK_RE='skipped=[1-9]' run_case slow-callback pass $D -- -f mjpeg -s 640x480 -r 30 -n 20 -t 15 --cb-sleep 70
 run_case controls pass $D -- --controls
 CHECK_RE='devices: 2' run_case two-devices pass EMUVC_DEVICE=luxvisions-30c9-0052,luxvisions-30c9-0052 -- --list
 run_case iso-errors pass EMUVC_CONFIG="$CFG/iso-errors.toml" -- -f mjpeg -s 640x480 -r 30 -n 60 -t 20 --allow-gaps --allow-corrupt
