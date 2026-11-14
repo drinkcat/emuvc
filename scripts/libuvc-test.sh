@@ -129,7 +129,10 @@ run_case virtual-clock pass $D $V -- -f mjpeg -s 640x480 -r 30 -n 300 -t 9
 run_case controls pass $D -- --controls
 CHECK_RE='devices: 2' run_case two-devices pass EMUVC_DEVICE=luxvisions-30c9-0052,luxvisions-30c9-0052 -- --list
 run_case iso-errors pass EMUVC_CONFIG="$CFG/iso-errors.toml" -- -f mjpeg -s 640x480 -r 30 -n 60 -t 20 --allow-gaps --allow-corrupt
-run_case zero-max-payload info EMUVC_CONFIG="$CFG/zero-max-payload.toml" -- -f yuyv -s 640x480 -r 30 -n 30 -t 10
+# The device commits dwMaxPayloadTransferSize 0: libuvc must not crash (it divided by zero before
+# libuvc#340) and falls back to the first alt setting with bandwidth. That alt is too small for the
+# stream, so frames arrive with gaps; only check that it streams.
+CHECK_RE='start streaming .* 192 bytes/payload' run_case zero-max-payload pass EMUVC_CONFIG="$CFG/zero-max-payload.toml" -- -f yuyv -s 640x480 -r 30 -n 10 -t 20 --allow-gaps
 run_case no-eof pass EMUVC_CONFIG="$CFG/no-eof.toml" -- -f yuyv -s 640x480 -r 30 -n 30 -t 15
 # GET_DEF(brightness) stalls: libuvc must report PIPE for it (a failed check, so stream_test exits 1).
 EXPECT_RC=1 CHECK_RE='FAIL brightness GET_DEF = .*\(Pipe\)' run_case stall-get-def pass EMUVC_CONFIG="$CFG/stall-get-def.toml" -- --controls

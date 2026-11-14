@@ -16,8 +16,8 @@ Runs libuvc (built out of tree, never modified) against the emuvc libusb shim
   `RESULT frames=.. corrupt=.. gaps=.. max_gap=.. fps=..` (exit 0 ok, 1 failed, 2 setup/usage error).
   `--controls` exercises brightness/AE mode; `--list` lists devices; `--fps-tol PCT` checks the rate;
   `--max-gaps N` tolerates N skipped frames (`--allow-gaps`: any number).
-* `configs/*.toml` are emulator configs for the fault/quirk cases. `info` cases
-  (zero-max-payload) only report an outcome and never fail the suite. `EXPECT_RC=N` makes a
+* `configs/*.toml` are emulator configs for the fault/quirk cases. `info` cases only report an
+  outcome and never fail the suite. `EXPECT_RC=N` makes a
   `pass` case expect exit N, for checked failures (stall-get-def: libuvc must report PIPE).
   `desc-*.toml` patch the synthetic camera's descriptors (`[[device.patch]]`) with a few structural
   errors a fuzzer rarely produces (unknown subtype, reordering, wrong counts, a duplicate frame);
