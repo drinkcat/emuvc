@@ -17,7 +17,8 @@ Runs libuvc (built out of tree, never modified) against the emuvc libusb shim
     Today it reports `XFAIL` and doesn't fail the suite. Once libuvc gets it right, it reports
     `XPASS`, and the case should become `pass`.
 
-  The summary ends with the list of known libuvc bugs: what should be fixed in libuvc.
+  The summary ends with the list of known libuvc bugs: what should be fixed in libuvc. In GitHub
+  Actions, every XPASS and FAIL is also an annotation on the run and the pull request.
 * `LIBUVC_TEST_MARKDOWN=FILE` appends a Markdown report: counts, failed cases, and the known
   libuvc bugs (still failing, or passing now).
 * `stream_test.c` is the client: it streams, decodes the frame stamp

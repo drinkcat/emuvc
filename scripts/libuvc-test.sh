@@ -124,6 +124,14 @@ run_case() {
     XFAIL) XFAIL=$((XFAIL + 1)); BUGS+=("$name|$BUG"); echo "XFAIL $name rc=$rc (${secs}s) [$BUG]" ;;
     FAIL) FAIL=$((FAIL + 1)); FAILED+=("$name $rc"); echo "FAIL $name rc=$rc (${secs}s) $summary" ;;
   esac
+  # GitHub Actions annotations: shown on the run and the pull request's checks.
+  if [ "${GITHUB_ACTIONS:-}" = true ]; then
+    local suite="libuvc suite${LIBUVC_TEST_NAME:+ ($LIBUVC_TEST_NAME)}"
+    case $verdict in
+      XPASS) echo "::warning title=XPASS in $suite::$name passes now, libuvc fixed? ($BUG) Make it a pass case." ;;
+      FAIL) echo "::error title=FAIL in $suite::$name: exit status $rc" ;;
+    esac
+  fi
   if [ $VERBOSE = 1 ]; then sed 's/^/    | /' "$TMP"
   elif [ $verdict = FAIL ]; then tail -15 "$TMP" | sed 's/^/    | /'
   elif [ $verdict = XFAIL ]; then { grep -E '^ *FAIL|^uvc_' "$TMP" || true; } | head -3 | sed 's/^/    | /'; fi
@@ -249,7 +257,7 @@ table() { # "name rc"...
 }
 if [ -n "${LIBUVC_TEST_MARKDOWN:-}" ]; then
   {
-    echo "### libuvc suite${LIBUVC_TEST_NAME:+ ($LIBUVC_TEST_NAME)}: $PASS passed, $FAIL failed, $XFAIL known libuvc bugs, ${#FIXED[@]} fixed upstream"
+    echo "### libuvc suite${LIBUVC_TEST_NAME:+ ($LIBUVC_TEST_NAME)}: $PASS passed, $FAIL failed, $XFAIL known libuvc bugs (XFAIL), ${#FIXED[@]} passing now (XPASS)"
     echo
     echo "libuvc: $LIBUVC_DESC at \`$LIBUVC_COMMIT\`"
     echo
@@ -259,7 +267,7 @@ if [ -n "${LIBUVC_TEST_MARKDOWN:-}" ]; then
       local e; for e in "$@"; do echo "| \`${e%%|*}\` | ${e#*|} |"; done
     }
     if [ ${#FIXED[@]} -gt 0 ]; then
-      echo "Known libuvc bugs that pass now (XPASS, fixed upstream? make them pass cases):"
+      echo "**XPASS: known libuvc bugs that pass now.** Fixed upstream? Make these \`pass\` cases:"
       echo; bugs "${FIXED[@]}"; echo
     fi
     if [ ${#BUGS[@]} -gt 0 ]; then
