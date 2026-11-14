@@ -34,8 +34,9 @@ cargo test
 
 CI (`.github/workflows/ci.yml`) runs all of these on every push and pull request, and weekly
 since libuvc master moves on its own. It also requires `cargo fmt --check` and
-`cargo clippy --workspace --all-targets -- -D warnings` to pass. The libuvc coverage table is in
-the job summary and the annotated sources in the `libuvc-coverage` artifact. Run it by hand
+`cargo clippy --workspace --all-targets -- -D warnings` to pass. The libuvc suite results (failures,
+known libuvc bugs, XPASS) and the coverage table are in the job summaries, and on pull requests in
+one comment that later pushes update. The annotated sources are in the `libuvc-coverage` artifact. Run it by hand
 (Actions, "Run workflow") to test another libuvc repository or ref, e.g. `pull/336/head`.
 
 The Rust version is pinned in `rust-toolchain.toml`, which rustup also uses for local builds, so

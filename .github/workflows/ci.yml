@@ -57,8 +57,20 @@ jobs:
           sudo apt-get install -y --no-install-recommends cmake pkg-config libjpeg-dev libusb-1.0-0-dev gcovr
       - run: rustup toolchain install # the version in rust-toolchain.toml
       - uses: Swatinem/rust-cache@v2
-      # Suite results and the coverage table go to the job summary, annotated sources to the artifact.
-      - run: scripts/libuvc-coverage.sh --markdown "$GITHUB_STEP_SUMMARY" --html target/libuvc-coverage
+      # Suite results and the coverage table go to the job summary and the pull request comment
+      # (report job), annotated sources to the artifact.
+      - run: scripts/libuvc-coverage.sh --markdown "$RUNNER_TEMP/report.md" --html target/libuvc-coverage
+        env:
+          LIBUVC_TEST_NAME: coverage
+      - name: Job summary
+        if: ${{ !cancelled() }}
+        run: if [ -f "$RUNNER_TEMP/report.md" ]; then cat "$RUNNER_TEMP/report.md" >> "$GITHUB_STEP_SUMMARY"; fi
+      - uses: actions/upload-artifact@v7
+        if: ${{ !cancelled() }}
+        with:
+          name: report-1-coverage
+          path: ${{ runner.temp }}/report.md
+          if-no-files-found: ignore
       - uses: actions/upload-artifact@v7
         if: ${{ !cancelled() }}
         with:
@@ -79,9 +91,61 @@ jobs:
           sudo apt-get install -y --no-install-recommends cmake pkg-config libjpeg-dev libusb-1.0-0-dev
       - run: rustup toolchain install # the version in rust-toolchain.toml
       - uses: Swatinem/rust-cache@v2
-      - run: LIBUVC_TEST_MARKDOWN="$GITHUB_STEP_SUMMARY" scripts/libuvc-asan.sh
+      - run: LIBUVC_TEST_MARKDOWN="$RUNNER_TEMP/report.md" scripts/libuvc-asan.sh
+      - name: Job summary
+        if: ${{ !cancelled() }}
+        run: if [ -f "$RUNNER_TEMP/report.md" ]; then cat "$RUNNER_TEMP/report.md" >> "$GITHUB_STEP_SUMMARY"; fi
+      - uses: actions/upload-artifact@v7
+        if: ${{ !cancelled() }}
+        with:
+          name: report-2-asan
+          path: ${{ runner.temp }}/report.md
+          if-no-files-found: ignore
       - if: always()
         run: rm -rf target/libuvc-* target/vm # see the libuvc job
+
+  # Posts the libuvc suite reports (counts, failures, known libuvc bugs, XPASS) as one pull request
+  # comment, updated in place on later pushes. Not for pull requests from forks: their token is
+  # read-only.
+  report:
+    name: libuvc results on the pull request
+    needs: [libuvc, libuvc-asan]
+    if: ${{ !cancelled() && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository }}
+    runs-on: ubuntu-26.04
+    permissions:
+      pull-requests: write
+    steps:
+      - uses: actions/download-artifact@v7
+        with:
+          pattern: report-*
+          path: reports
+      - name: Post or update the comment
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+          SHA: ${{ github.event.pull_request.head.sha }}
+          RUN: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          marker='<!-- emuvc-libuvc-report -->'
+          {
+            echo "$marker"
+            echo "libuvc suite results for ${SHA:0:12} ([run]($RUN), job summaries there too)."
+            echo
+            found=0
+            for f in reports/*/report.md; do
+              [ -f "$f" ] || continue
+              found=1; cat "$f"; echo
+            done
+            [ $found = 1 ] || echo "No report: the libuvc jobs stopped before writing one, see the run."
+          } > body.md
+          id=$(gh api --paginate "repos/$REPO/issues/$PR/comments" \
+            --jq ".[] | select(.user.login == \"github-actions[bot]\" and (.body | startswith(\"$marker\"))) | .id" | tail -n1)
+          if [ -n "$id" ]; then
+            gh api -X PATCH "repos/$REPO/issues/comments/$id" -F body=@body.md > /dev/null
+          else
+            gh api "repos/$REPO/issues/$PR/comments" -F body=@body.md > /dev/null
+          fi
 
   vm:
     name: USB/IP against the Linux kernel (QEMU)
