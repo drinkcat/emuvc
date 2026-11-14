@@ -31,7 +31,42 @@ pub struct UvcFunction {
     status: VecDeque<Vec<u8>>,
     pub vs: Vec<VsInterface>,
     events: Vec<ScheduledEvent>,
+    /// Asynchronous controls: (delay, failure code) by (entity, selector).
+    async_cfg: BTreeMap<(u8, u8), (u64, Option<u8>)>,
+    /// Asynchronous SET_CURs not completed yet.
+    pending: Vec<PendingSet>,
 }
+
+/// Per-control behaviour:
+///
+/// ```toml
+/// [[device.control]]
+/// entity = 3
+/// selector = 0x02      # PU_BRIGHTNESS_CONTROL
+/// async_ms = 200       # asynchronous (GET_INFO D4): SET_CUR completes 200 ms later
+/// fail = 0x02          # ... with a Control Failure Change ("wrong state") instead of the value
+/// ```
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ControlSpec {
+    pub entity: u8,
+    pub selector: u8,
+    #[serde(default)]
+    pub async_ms: Option<u64>,
+    #[serde(default)]
+    pub fail: Option<u8>,
+}
+
+struct PendingSet {
+    entity: u8,
+    selector: u8,
+    value: Vec<u8>,
+    due: BusTime,
+    fail: Option<u8>,
+}
+
+/// Completion delay of asynchronous controls without `async_ms` (they take over 10 ms).
+const DEFAULT_ASYNC_MS: u64 = 20;
 
 /// A device-initiated event, e.g. from a test scenario:
 ///
@@ -43,6 +78,9 @@ pub struct UvcFunction {
 /// [[device.event]]
 /// at_ms = 200
 /// kind = { control = { entity = 1, selector = 0x11, value = [1] } }  # privacy shutter closed
+///
+/// [[device.event]]
+/// kind = { control = { entity = 3, selector = 0x02, attribute = 4, value = [100, 0] } }  # new GET_MAX
 ///
 /// [[device.event]]
 /// kind = { raw = [1, 2] }   # arbitrary (here: truncated) status packet
@@ -65,11 +103,15 @@ pub struct EventSpec {
 pub enum EventKind {
     /// Still image button press then release (first streaming interface).
     Button,
-    /// Control changed by the device: new value + "value changed" interrupt.
+    /// Control Change interrupt from the device. With `attribute` 0 (value change, the
+    /// default) the control takes the new value; 1-4 (info, failure, min, max change)
+    /// only report `value`.
     Control {
         entity: u8,
         selector: u8,
         value: Vec<u8>,
+        #[serde(default)]
+        attribute: u8,
     },
     /// An arbitrary status interrupt packet (malformed ones included).
     Raw(Vec<u8>),
@@ -177,6 +219,8 @@ impl UvcFunction {
             status: VecDeque::new(),
             vs,
             events: Vec::new(),
+            async_cfg: BTreeMap::new(),
+            pending: Vec::new(),
         };
         f.update_auto_links(false);
         f
@@ -220,6 +264,26 @@ impl UvcFunction {
             c.cur = value.to_vec();
             self.push_control_change(entity, selector, STATUS_ATTR_VALUE, value.to_vec());
         }
+    }
+
+    /// Applies per-control settings (asynchronous completion).
+    pub fn configure_controls(&mut self, specs: &[ControlSpec]) -> Result<(), String> {
+        for s in specs {
+            let c = self
+                .controls
+                .get_mut(&(s.entity, s.selector))
+                .ok_or_else(|| {
+                    format!("{}: no control {}.{:#04x}", self.name, s.entity, s.selector)
+                })?;
+            if s.async_ms.is_some() || s.fail.is_some() {
+                c.info |= INFO_ASYNC;
+                self.async_cfg.insert(
+                    (s.entity, s.selector),
+                    (s.async_ms.unwrap_or(DEFAULT_ASYNC_MS), s.fail),
+                );
+            }
+        }
+        Ok(())
     }
 
     /// Queues a VideoStreaming button press/release interrupt.
@@ -279,8 +343,48 @@ impl UvcFunction {
                     entity,
                     selector,
                     value,
+                    attribute: STATUS_ATTR_VALUE,
                 } => self.device_set(entity, selector, &value),
+                EventKind::Control {
+                    entity,
+                    selector,
+                    value,
+                    attribute,
+                } => self.push_control_change(entity, selector, attribute, value),
                 EventKind::Raw(p) => self.push_status(p),
+            }
+        }
+    }
+
+    /// Completes the asynchronous SET_CURs that are due: Control Change interrupt with the
+    /// new value, or a Control Failure Change with the error code.
+    fn complete_pending(&mut self, now: BusTime) {
+        let (due, rest): (Vec<_>, Vec<_>) = std::mem::take(&mut self.pending)
+            .into_iter()
+            .partition(|p| p.due <= now);
+        self.pending = rest;
+        for p in due {
+            let Some(c) = self.controls.get_mut(&(p.entity, p.selector)) else {
+                continue;
+            };
+            // The state may have changed meanwhile (auto mode): set() checks again.
+            match p.fail.map_or_else(|| c.set(&p.value), Err) {
+                Ok(()) => {
+                    let v = c.cur.clone();
+                    debug!(
+                        "{}: async {}.{:#04x} done {v:02x?}",
+                        self.name, p.entity, p.selector
+                    );
+                    self.push_control_change(p.entity, p.selector, STATUS_ATTR_VALUE, v);
+                    self.update_auto_links(true);
+                }
+                Err(code) => {
+                    debug!(
+                        "{}: async {}.{:#04x} failed {code:#04x}",
+                        self.name, p.entity, p.selector
+                    );
+                    self.push_control_change(p.entity, p.selector, STATUS_ATTR_FAILURE, vec![code]);
+                }
             }
         }
     }
@@ -335,7 +439,12 @@ impl UvcFunction {
         self.vs.iter_mut().find(|v| v.interface() == iface)
     }
 
-    fn vc_request(&mut self, setup: &SetupPacket, data: &[u8]) -> Result<Vec<u8>, u8> {
+    fn vc_request(
+        &mut self,
+        now: BusTime,
+        setup: &SetupPacket,
+        data: &[u8],
+    ) -> Result<Vec<u8>, u8> {
         let (entity, cs, req) = (
             (setup.index >> 8) as u8,
             (setup.value >> 8) as u8,
@@ -355,10 +464,31 @@ impl UvcFunction {
         let Some(c) = self.controls.get_mut(&(entity, cs)) else {
             return Err(ERR_INVALID_CONTROL);
         };
-        let r = if req == SET_CUR {
-            c.set(data).map(|_| Vec::new())
-        } else {
-            c.get(req)
+        let busy = self
+            .pending
+            .iter()
+            .any(|p| (p.entity, p.selector) == (entity, cs));
+        let (is_async, autoupdate) = (c.info & INFO_ASYNC != 0, c.info & INFO_AUTOUPDATE != 0);
+        let r = match req {
+            // 2.4.4 (figure 2-21): the control is busy until its Control Change interrupt.
+            GET_CUR | SET_CUR if busy => Err(ERR_NOT_READY),
+            SET_CUR if is_async => c.check(data).map(|_| {
+                let (ms, fail) = self
+                    .async_cfg
+                    .get(&(entity, cs))
+                    .copied()
+                    .unwrap_or((DEFAULT_ASYNC_MS, None));
+                self.pending.push(PendingSet {
+                    entity,
+                    selector: cs,
+                    value: data.to_vec(),
+                    due: now + ms * 8,
+                    fail,
+                });
+                Vec::new()
+            }),
+            SET_CUR => c.set(data).map(|_| Vec::new()),
+            _ => c.get(req),
         };
         debug!(
             "{}: {} {}({entity}).{} {:02x?} -> {:02x?}",
@@ -375,8 +505,14 @@ impl UvcFunction {
             data,
             r
         );
-        if req == SET_CUR && r.is_ok() && unit_of(&kind).is_some() {
-            self.update_auto_links(true);
+        if req == SET_CUR && r.is_ok() && !is_async {
+            // 2.4.2.2: controls with Control Change events report every SET_CUR.
+            if autoupdate && let Some(c) = self.controls.get(&(entity, cs)) {
+                self.push_control_change(entity, cs, STATUS_ATTR_VALUE, c.cur.clone());
+            }
+            if unit_of(&kind).is_some() {
+                self.update_auto_links(true);
+            }
         }
         r
     }
@@ -389,7 +525,7 @@ impl Function for UvcFunction {
         }
         let iface = setup.index as u8;
         let r = if iface == self.vc.interface {
-            self.vc_request(setup, data)
+            self.vc_request(cx.now(), setup, data)
         } else if let Some(vs) = self.vs_mut(iface) {
             vs.control(
                 cx,
@@ -435,6 +571,7 @@ impl Function for UvcFunction {
         self.update_auto_links(false);
         self.request_error = 0;
         self.status.clear();
+        self.pending.clear();
         for vs in &mut self.vs {
             vs.reset();
         }
@@ -483,10 +620,13 @@ impl Function for UvcFunction {
             .iter()
             .filter(|v| matches!(v.desc.transfer, Transfer::Bulk { .. }))
             .filter_map(|v| v.next_wakeup());
-        bulk.chain(self.events.iter().filter_map(|e| e.next)).min()
+        bulk.chain(self.events.iter().filter_map(|e| e.next))
+            .chain(self.pending.iter().map(|p| p.due))
+            .min()
     }
 
     fn tick(&mut self, cx: &mut Ctx) {
+        self.complete_pending(cx.now());
         self.fire_events(cx.now());
     }
 }

@@ -41,7 +41,7 @@ Runs libuvc (built out of tree, never modified) against the emuvc libusb shim
 ## API coverage (`api_test.c`) and `scripts/libuvc-coverage.sh`
 
 `api_test [-d VID:PID] [-n INDEX] [-m MS] [-l] MODE...` exercises libuvc's public API
-(modes: `info controls convert poll still multi status negotiate wrap`, or `all`). It discovers
+(modes: `info controls convert poll still multi status async negotiate wrap`, or `all`). It discovers
 what the device offers through libuvc itself (formats, units, extension units, still
 patterns, streaming interfaces), so richer emulated devices raise coverage without code
 changes. Calls a device cannot serve are counted as "soft"; failures are crashes/hangs
@@ -53,6 +53,12 @@ grid, and wrong state (0x02) while an auto mode disables the control. It also ch
 switches (focus, white balance, hue, contrast, every AE mode in GET_RES) disable and re-enable
 their manual controls. `still` checks that a method 2 trigger yields exactly one frame of the
 still size before video frames resume.
+`async` sets every asynchronous camera terminal or processing unit control (GET_INFO D4) and
+expects the UVC 1.5 2.4.4 flow. The SET_CUR is accepted at once, and GET_CUR/SET_CUR on that
+control STALL with "not ready" until the Control Change interrupt arrives. That interrupt carries
+either the new value or a failure code. `configs/synthetic-async.toml` makes brightness slow and
+contrast fail (`[[device.control]]`). `configs/status-edge.toml` sends malformed and reserved
+status packets, then well-formed ones that must still reach the callbacks.
 `-l` (lenient) counts failed expectations as soft, for fault-injection configs. Each mode
 prints `RESULT mode=.. ok=.. soft=.. fail=..`. Cases: `api-*` in `libuvc-test.sh`.
 

@@ -66,6 +66,11 @@ probability = 0.01
 [[device.patch]]                         # malformed descriptors: see emuvc_devices::patch
 target = { iface = "vs", subtype = 0x06 }
 set = [[4, 4]]                           # first MJPEG format: bNumFrameDescriptors = 4
+
+[[device.control]]                       # per-control behaviour: see emuvc_uvc::ControlSpec
+entity = 3
+selector = 0x02                          # brightness: asynchronous, completes 100 ms later
+async_ms = 100
 ```
 
 ## Layout

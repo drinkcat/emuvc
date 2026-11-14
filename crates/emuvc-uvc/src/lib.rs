@@ -13,5 +13,5 @@ pub mod host;
 pub mod stream;
 pub mod topology;
 
-pub use function::{EventKind, EventSpec, UvcFunction};
+pub use function::{ControlSpec, EventKind, EventSpec, UvcFunction};
 pub use stream::{IdlePayload, StreamQuirks};
