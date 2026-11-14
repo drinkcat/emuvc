@@ -161,6 +161,8 @@ run_case no-eof pass EMUVC_CONFIG="$CFG/no-eof.toml" -- -f yuyv -s 640x480 -r 30
 run_case pts-first-only pass EMUVC_CONFIG="$CFG/pts-first-only.toml" -- -f yuyv -s 640x480 -r 30 -n 30 -t 15
 run_case pts-first-only-mjpeg pass EMUVC_CONFIG="$CFG/pts-first-only.toml" -- -f mjpeg -s 1280x720 -r 30 -n 30 -t 15
 run_case clock-wrap-jitter pass EMUVC_CONFIG="$CFG/clock-wrap-jitter.toml" -- -f mjpeg -s 1280x720 -r 30 -n 60 -t 15
+# 243 bytes of metadata in every payload header: frames intact, metadata bounded.
+run_case header-255 pass EMUVC_CONFIG="$CFG/header-255.toml" -- -f yuyv -s 640x480 -r 30 -n 30 -t 15
 # GET_DEF(brightness) stalls: libuvc must report PIPE for it (a failed check, so stream_test exits 1).
 EXPECT_RC=1 CHECK_RE='FAIL brightness GET_DEF = .*\(Pipe\)' run_case stall-get-def pass EMUVC_CONFIG="$CFG/stall-get-def.toml" -- --controls
 
@@ -176,11 +178,13 @@ CHECK_RE='^RESULT mode=poll ' run_api api-poll-no-eof EMUVC_CONFIG="$CFG/no-eof.
 CHECK_RE='^RESULT mode=convert ' run_api api-convert-no-dht EMUVC_CONFIG="$CFG/no-dht.toml" -- convert
 
 # Quirky-but-working devices: the API must behave as on the default device (strict).
-for c in header-6 header-long idle-zlp probe-len-26 probe-no-frame-size startup-delay no-fid-toggle pts-first-only clock-wrap-jitter; do
+for c in header-6 header-long header-255 idle-zlp probe-len-26 probe-no-frame-size startup-delay no-fid-toggle pts-first-only \
+         clock-wrap-jitter; do
   CHECK_RE='^RESULT mode=poll ' run_api "api-poll-$c" EMUVC_CONFIG="$CFG/$c.toml" -- poll negotiate
 done
 # Misbehaving devices: -l counts failed expectations as soft; crashes and hangs still fail.
-for c in err-bit drop-truncate header-2 header-lie probe-len-34-strict ignore-format iso-faults disconnect bogus-header bulk-faults; do
+for c in err-bit drop-truncate header-2 header-lie header-lie-scr probe-len-34-strict ignore-format iso-faults disconnect \
+         bogus-header bulk-faults probe-small-frame-size probe-bogus-frame; do
   CHECK_RE='^RESULT mode=negotiate ' run_api "api-fault-$c" EMUVC_CONFIG="$CFG/$c.toml" -- -l poll still status negotiate
 done
 
@@ -234,6 +238,11 @@ BUG="8-byte input terminal (composite connector): uvc_parse_vc_input_terminal ch
   CHECK_RE='open=0 ' TEST_BIN=api_test run_case api-desc-composite-input bug EMUVC_CONFIG="$CFG/desc-composite-input.toml" $V -- open
 BUG="bcdUVC 0x0101: uvc_open fails with UVC_ERROR_NOT_SUPPORTED" \
   CHECK_RE='open=0 ' TEST_BIN=api_test run_case api-desc-bcduvc-0101 bug EMUVC_CONFIG="$CFG/desc-bcduvc-0101.toml" $V -- open
+# Probe replies uvcvideo copes with (uvc_fixup_video_ctrl, uvc_v4l2_try_format): libuvc must stream.
+BUG="probe reply with dwMaxPayloadTransferSize 0xffff0400: no alternate setting fits, libuvc can't stream" \
+  CHECK_RE='^RESULT mode=poll ' TEST_BIN=api_test run_case api-max-payload-huge bug EMUVC_CONFIG="$CFG/max-payload-huge.toml" -- poll
+BUG="probe reply with bFormatIndex/bFrameIndex 0: libuvc can't stream" \
+  CHECK_RE='^RESULT mode=poll ' TEST_BIN=api_test run_case api-probe-zero-index bug EMUVC_CONFIG="$CFG/probe-zero-index.toml" -- poll
 
 # Asynchronous controls (UVC 1.5 2.4.4): completions and a Control Failure Change reach the status callback.
 CHECK_RE='async_ok=[2-9] async_failed=1' run_api api-async-completion EMUVC_CONFIG="$CFG/synthetic-async.toml" -- async
@@ -251,6 +260,9 @@ if [ -n "${LIBUVC_PRELOAD:-}" ]; then
 else
   TEST_BIN=api_test run_case api-exit-open pass EMUVC_CONFIG="$CFG/synthetic-default.toml" $V -- -x open
 fi
+
+# Interrupt transfers that time out: the host keeps polling and the events that follow arrive.
+CHECK_RE='button_events=2 value=1 ' run_api api-status-timeout EMUVC_CONFIG="$CFG/status-timeout.toml" -- -m 1000 status
 
 # Reshaped extension unit controls ([[device.control]]): libuvc sees the configured size and GET_INFO.
 CHECK_RE='XU 5/1 len=33 info=0x01' run_api api-xu-config EMUVC_CONFIG="$CFG/synthetic-xu.toml" -- controls
