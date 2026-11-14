@@ -1,0 +1,6 @@
+# Laptop camera that sends the PTS only in the first payload of each frame: later payloads have a
+# shorter header (8 bytes, SCR only). The PTS is optional per payload (UVC 1.5 2.4.3.3), so hosts
+# must parse each header from its own bmHeaderInfo, not from the frame's first one.
+[[device]]
+model = "luxvisions-30c9-0052"
+uvc = { clock = { pts_first_only = true } }

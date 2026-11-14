@@ -1,0 +1,7 @@
+# Laptop camera with a misbehaving device clock (UVC 1.5 2.4.3.3): the 32-bit PTS/SCR clock starts
+# 1 s before it wraps (48 MHz), runs 500 ppm fast, PTS jitters by up to 1 ms and every 7th
+# frame's PTS is one interval in the past. libuvc parses PTS/SCR but never uses them, so video
+# must be unaffected.
+[[device]]
+model = "luxvisions-30c9-0052"
+uvc = { clock = { start_ticks = 0xfd23_0000, drift_ppm = 500, pts_jitter = 48_000, pts_backwards_every = 7 } }

@@ -215,6 +215,34 @@ pub struct StreamQuirks {
     pub ignore_probe_format: bool,
     /// Delay before the first frame after streaming starts.
     pub startup_ms: u32,
+    /// Device clock (PTS/SCR) misbehaviour.
+    pub clock: ClockQuirks,
+}
+
+/// Payload header timestamps (UVC 1.5 2.4.3.3): PTS is the device clock at
+/// capture, SCR the device clock and the 1 kHz USB SOF counter when the
+/// payload is sent. These knobs break the assumptions hosts make when they
+/// map the device clock to their own (e.g. uvcvideo's hardware timestamps):
+///
+/// ```toml
+/// uvc = { clock = { start_ticks = 0xfd000000, pts_jitter = 20000 } }  # wraps after ~1 s at 48 MHz
+/// ```
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct ClockQuirks {
+    /// Device clock value at bus time 0 (the 32-bit clock wraps from 0xffffffff to 0).
+    pub start_ticks: u32,
+    /// The clock runs this many parts per million faster (negative: slower) than
+    /// dwClockFrequency says.
+    pub drift_ppm: i32,
+    /// PTS off by a pseudo-random amount within +-N ticks (same for every payload of a frame).
+    pub pts_jitter: u32,
+    /// Every Nth frame's PTS is one frame interval in the past.
+    pub pts_backwards_every: Option<u32>,
+    /// The SCR's clock field never advances (its SOF counter does).
+    pub scr_stuck: bool,
+    /// PTS only in the first payload of each frame: the header is 4 bytes shorter after that.
+    pub pts_first_only: bool,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -871,8 +899,31 @@ impl VsInterface {
         Some(t.div_ceil(UFRAME_NS))
     }
 
+    /// Device clock at bus time `ns` (wraps at 32 bits).
     fn ticks(&self, ns: u64) -> u32 {
-        (ns as u128 * self.clock_frequency as u128 / 1_000_000_000) as u32
+        let c = &self.quirks.clock;
+        let rate = self.clock_frequency as i128 * (1_000_000 + c.drift_ppm as i128);
+        let t = ns as i128 * rate / 1_000_000_000_000_000;
+        (t as u32).wrapping_add(c.start_ticks)
+    }
+
+    /// PTS of frame `index` captured at `ns`, with the clock quirks.
+    fn pts(&self, index: u64, ns: u64, interval_ns: u64) -> u32 {
+        let c = &self.quirks.clock;
+        let mut ns = ns;
+        if c.pts_backwards_every
+            .is_some_and(|n| n > 0 && index % n as u64 == n as u64 - 1)
+        {
+            ns = ns.saturating_sub(interval_ns);
+        }
+        let mut pts = self.ticks(ns);
+        if c.pts_jitter > 0 {
+            // Deterministic per frame: Knuth's multiplicative hash of the index.
+            let span = 2 * c.pts_jitter as u64 + 1;
+            let off = (index.wrapping_mul(2_654_435_761) >> 7) % span;
+            pts = pts.wrapping_add((off as i64 - c.pts_jitter as i64) as u32);
+        }
+        pts
     }
 
     /// Starts sending the most recent captured frame, if a new one is ready.
@@ -917,7 +968,7 @@ impl VsInterface {
                 index: latest,
                 data,
                 offset: 0,
-                pts: self.ticks(captured_ns),
+                pts: self.pts(latest, captured_ns, interval_ns),
                 error,
                 still: false,
             });
@@ -933,14 +984,28 @@ impl VsInterface {
         st.cur = Some(tx);
     }
 
-    /// Writes a payload header for `f` (or an idle header) into `out`.
-    fn header(&self, out: &mut Vec<u8>, fid: bool, f: Option<&FrameTx>, eof: bool, now: BusTime) {
-        let hlen = self.header_len();
+    /// Writes a payload header for `f` (or an idle header) into `out`; `first`: the
+    /// payload starts the frame.
+    fn header(
+        &self,
+        out: &mut Vec<u8>,
+        fid: bool,
+        f: Option<&FrameTx>,
+        first: bool,
+        eof: bool,
+        now: BusTime,
+    ) {
+        let mut hlen = self.header_len();
+        let pts = hlen >= 6 && (first || !self.quirks.clock.pts_first_only);
+        if hlen >= 6 && !pts {
+            hlen -= 4;
+        }
         let mut info = HDR_EOH | if fid { HDR_FID } else { 0 };
-        if hlen >= 6 || self.quirks.lie_pts_scr {
+        if pts || self.quirks.lie_pts_scr {
             info |= HDR_PTS;
         }
-        if hlen >= 12 || self.quirks.lie_pts_scr {
+        let scr = hlen >= if pts { 12 } else { 8 };
+        if scr || self.quirks.lie_pts_scr {
             info |= HDR_SCR;
         }
         if eof && !self.quirks.no_eof {
@@ -955,18 +1020,23 @@ impl VsInterface {
         let start = out.len();
         out.push(hlen as u8);
         out.push(info);
-        if hlen >= 6 {
+        if pts {
             out.extend_from_slice(&f.map_or(0, |f| f.pts).to_le_bytes());
         }
-        if hlen >= 12 {
-            out.extend_from_slice(&self.ticks(now * UFRAME_NS).to_le_bytes());
+        if scr {
+            let stc_ns = if self.quirks.clock.scr_stuck {
+                0
+            } else {
+                now * UFRAME_NS
+            };
+            out.extend_from_slice(&self.ticks(stc_ns).to_le_bytes());
             out.extend_from_slice(&(((now / 8) & 0x7ff) as u16).to_le_bytes());
         }
         // Metadata after the SCR: the frame index, then a filler pattern.
         let meta = f.map_or(0, |f| f.index as u32).to_le_bytes();
+        let fields = out.len() - start;
         while out.len() - start < hlen {
-            let i = out.len() - start - 12.min(out.len() - start);
-            out.push(*meta.get(i).unwrap_or(&0xa5));
+            out.push(*meta.get(out.len() - start - fields).unwrap_or(&0xa5));
         }
     }
 
@@ -989,6 +1059,7 @@ impl VsInterface {
         let mut st = self.stream.take()?;
         let mut out = Vec::with_capacity(cap.min(st.payload_size.max(hlen)));
         let mut body = Vec::new();
+        let first = st.cur.as_ref().is_some_and(|f| f.offset == 0);
         let eof = match st.cur.as_mut() {
             Some(f) => {
                 let (data, eof) = Self::chunk(f, cap - hlen);
@@ -997,7 +1068,7 @@ impl VsInterface {
             }
             None => false,
         };
-        self.header(&mut out, st.fid, st.cur.as_ref(), eof, now);
+        self.header(&mut out, st.fid, st.cur.as_ref(), first, eof, now);
         out.extend_from_slice(&body);
         if eof {
             let f = st.cur.take().unwrap();
@@ -1039,10 +1110,11 @@ impl VsInterface {
     pub fn still_in(&mut self, cx: &mut Ctx, max_len: usize) -> Option<Vec<u8>> {
         let hlen = self.header_len();
         let mut f = self.still_tx.take()?;
+        let first = f.offset == 0;
         let (data, eof) = Self::chunk(&mut f, max_len.saturating_sub(hlen));
         let body = data.to_vec();
         let mut out = Vec::with_capacity(hlen + body.len());
-        self.header(&mut out, false, Some(&f), eof, cx.now());
+        self.header(&mut out, false, Some(&f), first, eof, cx.now());
         out.extend_from_slice(&body);
         if eof {
             self.trigger = TRIGGER_NORMAL;

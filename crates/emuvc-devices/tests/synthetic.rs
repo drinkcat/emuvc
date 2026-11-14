@@ -398,3 +398,65 @@ fn async_controls() {
         ]
     );
 }
+
+/// UVC 1.5 2.4.3.3 timestamps with the clock quirks: a wrapping clock, a PTS one interval
+/// back every 3rd frame, PTS only in a frame's first payload, a stuck SCR.
+#[test]
+fn clock_quirks() {
+    let mut cfg = synthetic(SyntheticConfig {
+        transfer: "bulk".into(),
+        ..Default::default()
+    });
+    cfg.uvc.clock = emuvc_uvc::stream::ClockQuirks {
+        start_ticks: 0xffff_0000,
+        pts_backwards_every: Some(3),
+        scr_stuck: true,
+        pts_first_only: true,
+        ..Default::default()
+    };
+    let host = host();
+    let info = host.attach(build(&cfg).unwrap()).unwrap();
+    let view = ConfigView::parse(&info.configs[0]).unwrap();
+    let vs = &parse_function(&view, 0, info.speed).unwrap().streaming[0];
+    let c = probe_commit(&host, info.id, vs.interface, 2, 1, 333_333, 48).unwrap();
+    let interval_ticks = (c.frame_interval as u64 * 48_000_000 / 10_000_000) as u32;
+
+    // (pts of each frame, stuck SCR clock values)
+    let (mut pts, mut stc, mut fid, mut payloads) = (Vec::new(), Vec::new(), None, 0);
+    while pts.len() < 8 {
+        let p = host
+            .transfer(Urb::bulk_in(info.id, vs.endpoint, 64 * 1024))
+            .data;
+        let (hlen, bfh) = (p[0] as usize, p[1]);
+        payloads += 1;
+        let first = fid != Some(bfh & HDR_FID);
+        fid = Some(bfh & HDR_FID);
+        assert_eq!(bfh & HDR_PTS != 0, first, "PTS only in the first payload");
+        assert_eq!(hlen, if first { 12 } else { 8 });
+        assert_ne!(bfh & HDR_SCR, 0);
+        if first {
+            pts.push(u32::from_le_bytes(p[2..6].try_into().unwrap()));
+        }
+        stc.push(u32::from_le_bytes(
+            p[hlen - 6..hlen - 2].try_into().unwrap(),
+        ));
+    }
+    assert!(payloads > pts.len(), "frames span several payloads");
+    assert!(stc.iter().all(|&s| s == 0xffff_0000), "SCR stuck: {stc:x?}");
+    assert!(
+        pts[0] >= 0xffff_0000 || pts.iter().any(|&p| p < pts[0]),
+        "clock wraps"
+    );
+    let deltas: Vec<u32> = pts.windows(2).map(|w| w[1].wrapping_sub(w[0])).collect();
+    // Each PTS is rounded down from nanoseconds separately: +-1 tick.
+    let ok = |d: u32| {
+        [0, interval_ticks, 2 * interval_ticks]
+            .iter()
+            .any(|&e| d.abs_diff(e) <= 1)
+    };
+    assert!(
+        deltas.iter().all(|&d| ok(d)),
+        "deltas {deltas:?} vs {interval_ticks}"
+    );
+    assert!(deltas.contains(&0), "a PTS one interval back: {deltas:?}");
+}
