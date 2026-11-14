@@ -99,11 +99,13 @@ static pthread_mutex_t mu = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t cv = PTHREAD_COND_INITIALIZER;
 static struct {
   int mjpeg, w, h;
-  long target, frames, corrupt, gaps, max_gap;
-  int have_prev; uint32_t prev;
+  long target, frames, corrupt, gaps, max_gap, skipped, corrupt_since;
+  int have_prev; uint32_t prev, prev_seq;
   double t_first, t_last;
   int done;
 } S;
+
+static long cb_sleep_ms; /* --cb-sleep: a slow consumer, to make libuvc skip frames */
 
 static double now(void) {
   struct timespec ts; clock_gettime(CLOCK_MONOTONIC, &ts);
@@ -125,21 +127,37 @@ static void cb(uvc_frame_t *f, void *arg) {
   if (!S.done) {
     if (!ok) {
       S.corrupt++;
+      S.corrupt_since++;
     } else {
       double t = now();
       if (S.frames == 0) S.t_first = t;
       S.t_last = t;
-      if (S.have_prev && v != S.prev + 1) {
-        long gap = v > S.prev ? (long)(v - S.prev - 1) : 1;
-        S.gaps++;
-        if (gap > S.max_gap) S.max_gap = gap;
+      /* Missing stamps fall into two kinds, told apart by f->sequence (libuvc counts every frame it
+       * assembles). A stamp missing while the sequence did not advance for it: the frame never made
+       * it through the device, transport or payload parsing -- a gap. A sequence step that was never
+       * delivered (nor seen corrupt): libuvc assembled the frame but overwrote it before its
+       * callback thread ran (it holds a single frame) -- skipped, reported only, since it depends
+       * on host scheduling. */
+      if (S.have_prev) {
+        uint32_t dv = v - S.prev, ds = f->sequence - S.prev_seq;
+        long lost = (int32_t)dv <= 0 ? 1 : dv > ds ? (long)(dv - ds) : 0;
+        long skipped = (long)ds - 1 - S.corrupt_since;
+        if (skipped > 0) S.skipped += skipped;
+        if (lost) {
+          S.gaps++;
+          if (lost > S.max_gap) S.max_gap = lost;
+        }
       }
-      S.prev = v; S.have_prev = 1;
+      S.prev = v; S.prev_seq = f->sequence; S.have_prev = 1; S.corrupt_since = 0;
       S.frames++;
       if (S.frames >= S.target) { S.done = 1; pthread_cond_broadcast(&cv); }
     }
   }
   pthread_mutex_unlock(&mu);
+  if (cb_sleep_ms > 0) {
+    struct timespec ts = {cb_sleep_ms / 1000, (cb_sleep_ms % 1000) * 1000000L};
+    nanosleep(&ts, NULL);
+  }
 }
 
 /* ---- controls ---- */
@@ -192,7 +210,7 @@ static void test_controls(uvc_device_handle_t *h) {
 static void usage(void) {
   fprintf(stderr, "usage: stream_test [-d VID:PID] [-f mjpeg|yuyv] [-s WxH] [-r FPS] [-n FRAMES] [-t TIMEOUT_S]\n"
                   "       [--allow-gaps] [--max-gaps N] [--allow-corrupt] [--expect-open-fail] [--controls] [--list]\n"
-                  "       [--fps-tol PCT]\n");
+                  "       [--fps-tol PCT] [--cb-sleep MS]\n");
 }
 
 int main(int argc, char **argv) {
@@ -212,6 +230,7 @@ int main(int argc, char **argv) {
     else if (!strcmp(a, "-n")) S.target = atol(NEXT());
     else if (!strcmp(a, "-t")) timeout = atof(NEXT());
     else if (!strcmp(a, "--fps-tol")) fps_tol = atof(NEXT());
+    else if (!strcmp(a, "--cb-sleep")) cb_sleep_ms = atol(NEXT());
     else if (!strcmp(a, "--allow-gaps")) allow_gaps = 1;
     else if (!strcmp(a, "--max-gaps")) max_gaps = atol(NEXT());
     else if (!strcmp(a, "--allow-corrupt")) allow_corrupt = 1;
@@ -285,13 +304,14 @@ int main(int argc, char **argv) {
     if (pthread_cond_timedwait(&cv, &mu, &ts)) break;
   int done = S.done;
   S.done = 1;
-  long frames = S.frames, corrupt = S.corrupt, gaps = S.gaps, max_gap = S.max_gap;
+  long frames = S.frames, corrupt = S.corrupt, gaps = S.gaps, max_gap = S.max_gap, skipped = S.skipped;
   double dt = S.t_last - S.t_first;
   pthread_mutex_unlock(&mu);
   uvc_stop_streaming(devh);
 
   double mfps = (frames > 1 && dt > 0) ? (frames - 1) / dt : 0;
-  printf("RESULT frames=%ld corrupt=%ld gaps=%ld max_gap=%ld fps=%.2f\n", frames, corrupt, gaps, max_gap, mfps);
+  printf("RESULT frames=%ld corrupt=%ld gaps=%ld max_gap=%ld skipped=%ld fps=%.2f\n", frames, corrupt, gaps, max_gap,
+         skipped, mfps);
   if (!done) { fprintf(stderr, "FAIL: timeout after %.0fs with %ld/%ld frames\n", timeout, frames, S.target); rc = 1; }
   if (corrupt && !allow_corrupt) { fprintf(stderr, "FAIL: %ld corrupt frames\n", corrupt); rc = 1; }
   if (gaps > max_gaps && !allow_gaps) {
