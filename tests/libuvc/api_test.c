@@ -1060,6 +1060,16 @@ static void mode_still(void) {
     if (fr && ctrl_for(f, fr, default_interval(fr), &c) == UVC_SUCCESS) {
       soft(uvc_get_still_ctrl_format_size(devh, &c, &sc, fr->wWidth, fr->wHeight));
       expect(uvc_trigger_still(devh, &sc) != UVC_SUCCESS, "trigger rejected");
+      /* libuvc triggers method 2 only: refused with a running stream too */
+      uvc_stream_handle_t *s;
+      if (soft(uvc_stream_open_ctrl(devh, &s, &c)) >= 0) {
+        if (soft(uvc_stream_start(s, NULL, NULL, 0)) >= 0) {
+          sc.bInterfaceNumber = c.bInterfaceNumber;
+          expect(uvc_trigger_still(devh, &sc) == UVC_ERROR_NOT_SUPPORTED, "trigger with a running stream rejected");
+          uvc_stream_stop(s);
+        }
+        uvc_stream_close(s);
+      }
     }
     printf("  still capture: not supported\n");
   }
@@ -1276,6 +1286,12 @@ static void mode_negotiate(void) {
           uvc_error_t e = uvc_get_stream_ctrl_format_size(devh, &c, ff, fr->wWidth, fr->wHeight, 10000000 / ivs[k]);
           if (e == UVC_SUCCESS) okc++; else soft(e);
         }
+        /* fps 0: the shortest interval */
+        combos++;
+        uvc_error_t e0 = uvc_get_stream_ctrl_format_size(devh, &c, ff, fr->wWidth, fr->wHeight, 0);
+        expect(e0 == UVC_SUCCESS && c.dwFrameInterval == fr->dwMinFrameInterval, "%ux%u@0: shortest interval (%s)",
+               fr->wWidth, fr->wHeight, uvc_strerror(e0));
+        if (e0 == UVC_SUCCESS) okc++;
         /* off-step interval is rejected when a step is defined */
         if (fr->dwFrameIntervalStep > 1) soft(uvc_get_stream_ctrl_format_size(devh, &c, ff, fr->wWidth, fr->wHeight, 10000000 / (fr->dwMinFrameInterval + 1)));
       }
