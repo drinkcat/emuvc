@@ -56,7 +56,8 @@ and processing unit control it checks GET_INFO and the STALL with the right Requ
 out of range (0x04) outside GET_MIN/GET_MAX, invalid value within range (0x08) off the GET_RES
 grid, and wrong state (0x02) while an auto mode disables the control. It also checks that auto
 switches (focus, white balance, hue, contrast, every AE mode in GET_RES) disable and re-enable
-their manual controls. Extension unit controls must honour GET_INFO: without D0 or D1, GET_CUR or
+their manual controls. With the auto modes off, the typed setters (`uvc_set_exposure_abs`, ...) must
+accept the current value of their control. Extension unit controls must honour GET_INFO: without D0 or D1, GET_CUR or
 SET_CUR STALLs with "invalid request". A SET_CUR whose length isn't GET_LEN must also STALL.
 `configs/synthetic-xu.toml` reshapes them with `[[device.control]]`. The VC power mode control, if
 present, accepts mode 0, accepts mode 1 only when D4 says it is supported, rejects reserved modes

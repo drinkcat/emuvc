@@ -330,6 +330,7 @@ pub fn standard(unit: Unit, selector: u8) -> Option<Control> {
             .only(false, false, false, false)
             .with_info(AUTO),
         (Unit::Camera, CT_FOCUS_SIMPLE_CONTROL) => Control::int(1, false, 0, 3, 1, 0),
+        (Unit::Camera, CT_WINDOW_CONTROL) => digital_window(640, 480),
         (Unit::Camera, CT_REGION_OF_INTEREST_CONTROL) => region_of_interest(640, 480),
         (Unit::Processing, PU_BACKLIGHT_COMPENSATION_CONTROL) => Control::int(2, false, 0, 2, 1, 1),
         (Unit::Processing, PU_BRIGHTNESS_CONTROL) => Control::int(2, true, -64, 64, 1, 0),
@@ -366,6 +367,23 @@ pub fn standard(unit: Unit, selector: u8) -> Option<Control> {
         (Unit::Processing, PU_CONTRAST_AUTO_CONTROL) => Control::switch(0, 1),
         _ => return None,
     })
+}
+
+/// CT_DIGITAL_WINDOW (UVC 1.5 4.2.2.1.19) for a sensor of the given size: top, left,
+/// bottom, right, wNumSteps, bmNumStepsUnits (D0 video frames, D1 milliseconds). The
+/// default window is the whole sensor; GET_MAX is the sensor size and the most steps.
+pub fn digital_window(width: u16, height: u16) -> Control {
+    let (w, h) = (width as i64 - 1, height as i64 - 1);
+    Control::fields(&[
+        Field::new(2, false, 0, h, 1, 0),
+        Field::new(2, false, 0, w, 1, 0),
+        Field::new(2, false, 0, h, 1, h),
+        Field::new(2, false, 0, w, 1, w),
+        Field::new(2, false, 0, 30, 1, 0),
+        Field::new(2, false, 1, 2, 1, 1),
+    ])
+    .only(true, true, false, true)
+    .with_info(INFO_GET | INFO_SET | INFO_AUTOUPDATE)
 }
 
 /// CT_REGION_OF_INTEREST for a sensor of the given size: top, left, bottom,
