@@ -71,6 +71,12 @@ set = [[4, 4]]                           # first MJPEG format: bNumFrameDescript
 entity = 3
 selector = 0x02                          # brightness: asynchronous, completes 100 ms later
 async_ms = 100
+
+[[device.control]]                       # extension unit control: 33 bytes, read-only
+entity = 5
+selector = 1
+len = 33
+info = 0x01
 ```
 
 ## Layout
