@@ -1,0 +1,9 @@
+# Synthetic UVC 1.0 camera whose VC header says bcdUVC 0x010a ("1.0a"), as some early cameras did.
+# libuvc reads it as UVC 1.0 (26-byte probe/commit), which is what the device expects.
+[[device]]
+model = "synthetic"
+synthetic = { uvc = "1.0" }
+
+[[device.patch]]
+target = { iface = "vc", subtype = 0x01 }  # VC header
+set = [[3, 0x0a]]                          # bcdUVC 0x0100 -> 0x010a

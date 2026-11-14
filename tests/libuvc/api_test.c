@@ -28,7 +28,7 @@ extern void uvc_print_frameformats(uvc_device_handle_t *devh); /* exported, not 
 
 /* ---- bookkeeping ---- */
 static int n_ok, n_soft, n_fail;
-static int opt_vid, opt_pid, opt_index, opt_ms = 1000, opt_lenient;
+static int opt_vid, opt_pid, opt_index, opt_ms = 1000, opt_lenient, opt_leave_open;
 static const char *cur_mode = "";
 
 static void expect(int cond, const char *fmt, ...) {
@@ -979,7 +979,8 @@ static void mode_poll(void) {
  * frame of exactly the still's byte count. */
 static void check_still_frame(void) {
   for (const uvc_format_desc_t *f = uvc_get_format_descs(devh); f; f = f->next) {
-    if (f->bDescriptorSubtype != UVC_VS_FORMAT_UNCOMPRESSED || !f->bBitsPerPixel || !f->still_frame_desc) continue;
+    if (f->bDescriptorSubtype != UVC_VS_FORMAT_UNCOMPRESSED || !f->bBitsPerPixel || !f->still_frame_desc ||
+        fmt_of(f) == UVC_FRAME_FORMAT_UNKNOWN) continue;
     const uvc_still_frame_res_t *s = NULL;
     for (const uvc_still_frame_res_t *r = f->still_frame_desc->imageSizePatterns; r; r = r->next)
       if (!s || (uint32_t)r->wWidth * r->wHeight < (uint32_t)s->wWidth * s->wHeight) s = r;
@@ -1238,6 +1239,19 @@ static void mode_negotiate(void) {
   int combos = 0, okc = 0;
   for (const uvc_format_desc_t *f = uvc_get_format_descs(devh); f; f = f->next) {
     enum uvc_frame_format ff = fmt_of(f);
+    if (ff == UVC_FRAME_FORMAT_UNKNOWN) {
+      /* A GUID libuvc doesn't know: it can't be asked for by name (UNKNOWN is ANY), and streaming
+       * it is refused. */
+      const uvc_frame_desc_t *fr = smallest_frame(f);
+      uvc_stream_ctrl_t c;
+      uvc_stream_handle_t *s;
+      if (fr && soft(ctrl_for(f, fr, default_interval(fr), &c)) >= 0 && soft(uvc_stream_open_ctrl(devh, &s, &c)) >= 0) {
+        expect(uvc_stream_start(s, NULL, NULL, 0) == UVC_ERROR_NOT_SUPPORTED, "format %u (unknown GUID): streaming refused",
+               f->bFormatIndex);
+        uvc_stream_close(s);
+      }
+      continue;
+    }
     for (const uvc_frame_desc_t *fr = f->frame_descs; fr; fr = fr->next) {
       uvc_stream_ctrl_t c;
       if (fr->intervals) {
@@ -1318,6 +1332,35 @@ static void mode_negotiate(void) {
   }
 }
 
+/* ================= open ================= */
+/* Enumeration and open only, for descriptor cases where rejecting the device can be the expected
+ * outcome: prints what libuvc made of it (checked by libuvc-test.sh). With -x the device stays open,
+ * for uvc_exit() to close. */
+static void mode_open(void) {
+  uvc_device_t **list;
+  int n = 0;
+  if (uvc_get_device_list(ctx, &list) == UVC_SUCCESS) {
+    while (list[n]) n++;
+    uvc_free_device_list(list, 1);
+  }
+  uvc_device_t **devs = NULL;
+  uvc_error_t fe = uvc_find_devices(ctx, &devs, opt_vid, opt_pid, NULL);
+  if (fe == UVC_SUCCESS) uvc_free_device_list(devs, 1);
+  if (opt_vid || opt_pid) {
+    uvc_device_t *d;
+    expect(uvc_find_device(ctx, &d, opt_vid, opt_pid ^ 0xffff, NULL) == UVC_ERROR_NO_DEVICE, "find with another PID fails");
+  }
+  uvc_error_t oe = UVC_ERROR_NO_DEVICE;
+  if (uvc_find_device(ctx, &dev, opt_vid, opt_pid, NULL) == UVC_SUCCESS) oe = uvc_open(dev, &devh);
+  if (oe == UVC_SUCCESS) {
+    int nfmt = 0;
+    for (const uvc_format_desc_t *f = uvc_get_format_descs(devh); f; f = f->next) nfmt++;
+    printf("  formats: %d, camera terminal: %s\n", nfmt, uvc_get_camera_terminal(devh) ? "yes" : "no");
+    if (opt_leave_open) devh = NULL; /* uvc_exit() closes it */
+  }
+  printf("RESULT_EXTRA devices=%d find=%d open=%d (%s)\n", n, fe, oe, uvc_strerror(oe));
+}
+
 /* ================= wrap ================= */
 /* uvc_wrap() on a descriptor of a system device (the shim ignores the fd and wraps an emulated device). */
 static void mode_wrap(void) {
@@ -1359,10 +1402,11 @@ typedef void (*mode_fn)(void);
 static const struct { const char *name; mode_fn fn; } MODES[] = {
   {"info", mode_info}, {"controls", mode_controls}, {"convert", mode_convert}, {"poll", mode_poll},
   {"still", mode_still}, {"multi", mode_multi}, {"status", mode_status}, {"async", mode_async}, {"negotiate", mode_negotiate}, {"wrap", mode_wrap},
+  {"open", mode_open},
 };
 
 static void usage(void) {
-  fprintf(stderr, "usage: api_test [-d VID:PID] [-n INDEX] [-m STATUS_WAIT_MS] [-l] MODE...\n  modes: info controls convert poll still multi status async negotiate wrap all\n");
+  fprintf(stderr, "usage: api_test [-d VID:PID] [-n INDEX] [-m STATUS_WAIT_MS] [-l] [-x] MODE...\n  modes: info controls convert poll still multi status async negotiate wrap open all\n");
 }
 
 int main(int argc, char **argv) {
@@ -1372,6 +1416,7 @@ int main(int argc, char **argv) {
     else if (!strcmp(argv[i], "-n") && i + 1 < argc) opt_index = atoi(argv[++i]);
     else if (!strcmp(argv[i], "-m") && i + 1 < argc) opt_ms = atoi(argv[++i]);
     else if (!strcmp(argv[i], "-l")) opt_lenient = 1;
+    else if (!strcmp(argv[i], "-x")) opt_leave_open = 1;
     else if (argv[i][0] != '-' && nm < 16) modes[nm++] = argv[i];
     else { usage(); return 2; }
   }

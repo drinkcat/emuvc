@@ -1,0 +1,9 @@
+# Synthetic camera whose YUY2 format has a GUID no host knows ('ZZZZ' instead of 'YUY2'), like the
+# vendor GUIDs of thermal and depth cameras. Hosts must list it and refuse to stream it, while the
+# other formats keep working.
+[[device]]
+model = "synthetic"
+
+[[device.patch]]
+target = { iface = "vs", subtype = 0x04 }  # first VS_FORMAT_UNCOMPRESSED (YUY2)
+set = [[5, 0x5a], [6, 0x5a], [7, 0x5a], [8, 0x5a]]

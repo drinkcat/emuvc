@@ -36,7 +36,11 @@ Runs libuvc (built out of tree, never modified) against the emuvc libusb shim
   too broken to stream (`robust`), and the rest are known bugs (`bug`).
   `desc-*.toml` patch the synthetic camera's descriptors (`[[device.patch]]`) with a few structural
   errors a fuzzer rarely produces (unknown subtype, reordering, wrong counts, a duplicate frame);
-  the device keeps working from its original descriptors.
+  the device keeps working from its original descriptors. `desc-validation.toml` holds one synthetic
+  camera per broken length, count or descriptor order (told apart by PID, cases `desc-*`): libuvc must
+  reject each with `UVC_ERROR_INVALID_DEVICE`. Other `desc-*.toml` must work (an unknown format GUID,
+  compression patterns, a vendor descriptor among the VC ones, bcdUVC 0x010a), or are known bugs
+  (`desc-composite-input`, `desc-bcduvc-0101`: valid descriptors libuvc rejects).
   `pts-first-only.toml` and `clock-wrap-jitter.toml` exercise payload header timestamps
   (`uvc.clock`). The first shortens the header after a frame's first payload. The second makes the
   PTS/SCR clock wrap, drift, jitter and step back. libuvc parses PTS/SCR without using them, and
@@ -46,7 +50,9 @@ Runs libuvc (built out of tree, never modified) against the emuvc libusb shim
 ## API coverage (`api_test.c`) and `scripts/libuvc-coverage.sh`
 
 `api_test [-d VID:PID] [-n INDEX] [-m MS] [-l] MODE...` exercises libuvc's public API
-(modes: `info controls convert poll still multi status async negotiate wrap`, or `all`). It discovers
+(modes: `info controls convert poll still multi status async negotiate wrap open`, or `all`;
+`open` only lists, finds and opens the device, and prints the outcome for the descriptor cases; with
+`-x` it leaves the device open for `uvc_exit()` to close). It discovers
 what the device offers through libuvc itself (formats, units, extension units, still
 patterns, streaming interfaces), so richer emulated devices raise coverage without code
 changes. Calls a device cannot serve are counted as "soft"; failures are crashes/hangs
