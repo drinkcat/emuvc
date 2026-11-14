@@ -88,6 +88,9 @@ pub struct DeviceConfig {
     /// Device-initiated events (status interrupts) of the first UVC function.
     #[serde(rename = "event")]
     pub events: Vec<EventSpec>,
+    /// Edits of the configuration descriptor the host reads (see [`crate::patch`]).
+    #[serde(rename = "patch")]
+    pub patches: Vec<crate::patch::DescriptorPatch>,
     /// Options of the "synthetic" model.
     pub synthetic: crate::synthetic::SyntheticConfig,
 }

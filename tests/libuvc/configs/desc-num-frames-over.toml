@@ -1,0 +1,8 @@
+# Synthetic camera whose MJPEG format claims 4 frame descriptors (bNumFrameDescriptors) but is
+# followed by 3. Hosts must not trust the count over the descriptors present.
+[[device]]
+model = "synthetic"
+
+[[device.patch]]
+target = { iface = "vs", subtype = 0x06 }  # VS_FORMAT_MJPEG
+set = [[4, 4]]                             # bNumFrameDescriptors

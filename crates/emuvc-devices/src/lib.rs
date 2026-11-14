@@ -9,6 +9,7 @@ pub mod dfu;
 pub mod generic;
 pub mod lsusb;
 pub mod luxvisions_30c9_0052;
+pub mod patch;
 pub mod synthetic;
 
 pub use config::{BusConfig, DeviceConfig};
@@ -56,7 +57,8 @@ pub fn build(cfg: &DeviceConfig) -> Result<Box<dyn UsbDevice>, String> {
             MODELS.iter().map(|m| m.name).collect::<Vec<_>>().join(", ")
         )
     })?;
-    let dev = (model.build)(cfg)?;
+    let mut dev = (model.build)(cfg)?;
+    dev.patch_configs(|c| patch::apply(c, &cfg.patches))?;
     Ok(if cfg.faults.is_empty() {
         Box::new(dev)
     } else {

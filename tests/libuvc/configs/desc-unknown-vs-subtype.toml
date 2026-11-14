@@ -1,0 +1,8 @@
+# Synthetic camera with an unknown VideoStreaming descriptor subtype (0x20) between the MJPEG and
+# the uncompressed formats. Hosts must skip it by bLength and keep parsing (UVC 1.5 3.9).
+[[device]]
+model = "synthetic"
+
+[[device.patch]]
+target = { iface = "vs", subtype = 0x04 }  # VS_FORMAT_UNCOMPRESSED
+insert_before = [6, 0x24, 0x20, 0, 0, 0]

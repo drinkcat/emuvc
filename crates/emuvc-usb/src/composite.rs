@@ -154,6 +154,16 @@ impl CompositeDevice {
         &self.desc
     }
 
+    /// Rewrites the configuration descriptors the host reads. The device keeps
+    /// behaving as the original descriptors say (interfaces, alternate
+    /// settings, endpoints): for malformed-descriptor tests.
+    pub fn patch_configs<E>(
+        &mut self,
+        mut f: impl FnMut(&mut Vec<u8>) -> Result<(), E>,
+    ) -> Result<(), E> {
+        self.desc.configs.iter_mut().try_for_each(&mut f)
+    }
+
     fn view(&self) -> Option<&ConfigView> {
         self.views
             .iter()

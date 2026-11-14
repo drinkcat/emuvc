@@ -1,0 +1,8 @@
+# Synthetic camera with the second MJPEG frame descriptor (bFrameIndex 2, 320x240) listed twice.
+# Frame indexes must be unique within a format; hosts must not crash or loop on the duplicate.
+[[device]]
+model = "synthetic"
+
+[[device.patch]]
+target = { iface = "vs", subtype = 0x07, nth = 1 }  # second VS_FRAME_MJPEG
+duplicate = true
