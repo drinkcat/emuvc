@@ -701,7 +701,12 @@ static void convert_mjpeg(uvc_frame_t *in, const char *tag, int expect_ok) {
   snprintf(what, sizeof what, "%s any2rgb", tag);
   r = uvc_any2rgb(in, o);
   if (expect_ok) expect(r == UVC_SUCCESS, "%s", what); else soft(r);
-  expect(uvc_any2bgr(in, o) == UVC_ERROR_NOT_SUPPORTED, "%s any2bgr(mjpeg) unsupported", tag);
+  /* uvc_any2bgr decodes MJPEG since libuvc#351; before, it returned NOT_SUPPORTED (soft). */
+  snprintf(what, sizeof what, "%s any2bgr", tag);
+  r = uvc_any2bgr(in, o);
+  if (r == UVC_ERROR_NOT_SUPPORTED) soft(r);
+  else if (expect_ok) { expect(r == UVC_SUCCESS, "%s", what); if (!r) expect_frame(o, UVC_FRAME_FORMAT_BGR, w, h, px * 3, what); }
+  else soft(r);
   uvc_free_frame(o);
 }
 
