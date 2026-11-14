@@ -1,0 +1,9 @@
+# Synthetic camera that also describes a composite video input: an 8-byte input terminal of type
+# COMPOSITE_CONNECTOR (0x0401), as capture devices do (UVC 1.5 table 3-4, B.4). It is valid, and
+# hosts that only use camera terminals should ignore it.
+[[device]]
+model = "synthetic"
+
+[[device.patch]]
+target = { iface = "vc", subtype = 0x02 }  # camera terminal
+insert_before = [8, 0x24, 0x02, 0x20, 0x01, 0x04, 0x00, 0x00]

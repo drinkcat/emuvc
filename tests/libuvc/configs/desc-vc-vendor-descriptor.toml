@@ -1,0 +1,8 @@
+# Synthetic camera with a vendor-specific descriptor (bDescriptorType 0x41, not CS_INTERFACE) among
+# the class-specific VideoControl descriptors. Hosts must skip it by bLength and keep parsing.
+[[device]]
+model = "synthetic"
+
+[[device.patch]]
+target = { iface = "vc", subtype = 0x02 }  # camera terminal
+insert_before = [5, 0x41, 0x01, 0, 0]
