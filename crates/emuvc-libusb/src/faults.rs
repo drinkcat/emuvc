@@ -10,6 +10,11 @@
 //! without prefix (io, access, busy, no_mem, pipe, timeout, no_device, ...),
 //! `@N-M` restricts it to the Nth..Mth calls (1-based; default: every call).
 //! Example: `EMUVC_LIBUSB_FAIL="submit_transfer=no_mem@5,open=access@1"`.
+//!
+//! `submit_transfer` counts every submission, including those of the
+//! synchronous calls (`libusb_control_transfer`, ...). `submit_transfer_iso`,
+//! `_bulk`, `_interrupt` and `_control` count only that type of transfer, e.g.
+//! `submit_transfer_iso=no_mem@1` fails a stream's first isochronous transfer.
 
 use std::collections::HashMap;
 use std::ffi::c_int;

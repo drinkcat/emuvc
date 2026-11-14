@@ -303,12 +303,18 @@ BUG="one frame descriptor's interval list overruns its bLength: libuvc rejects t
 
 # Shim-level libusb failures (EMUVC_LIBUSB_FAIL): libuvc's error paths must neither crash nor hang.
 # FAULT[:mode] ; default mode is every mode in one process (lenient).
+# submit_transfer_iso counts stream transfers only: the first of a stream (none submitted: the start fails),
+# the second (the stream runs on the others), and in poll mode a resubmission from the transfer callback.
 for f in get_config_descriptor=io get_active_config_descriptor=io open=access \
          claim_interface=busy detach_kernel_driver=io kernel_driver_active=io set_interface_alt_setting=io \
-         clear_halt=io submit_transfer=no_mem@3 alloc_transfer=no_mem@5 alloc_transfer=no_mem \
+         clear_halt=io submit_transfer=no_mem@3 submit_transfer_iso=no_mem@1 submit_transfer_iso=no_mem@2 \
+         submit_transfer_iso=io@150:poll submit_transfer_interrupt=io@2 alloc_transfer=no_mem@5 alloc_transfer=no_mem \
+         get_device_list=io release_interface=not_found release_interface=io \
+         detach_kernel_driver=not_found detach_kernel_driver=not_supported \
          control_transfer=pipe@5 control_transfer=pipe@20-60 control_transfer=io@3 \
          get_string_descriptor_ascii=io init_context=no_mem set_configuration=io wrap_sys_device=io; do
-  CHECK_RE='^RESULT mode=' run_api "api-shimfail-${f//[^a-z_0-9=-]/_}" $D $V "EMUVC_LIBUSB_FAIL=$f" -- -l all
+  m=all; [[ $f == *:* ]] && m=${f##*:} && f=${f%:*}
+  CHECK_RE='^RESULT mode=' run_api "api-shimfail-${f//[^a-z_0-9=-]/_}" $D $V "EMUVC_LIBUSB_FAIL=$f" -- -l "$m"
 done
 # No device descriptor: libuvc finds no device. Mode by mode, as uvc_print_diag used to print an
 # uninitialised pointer here.
