@@ -249,7 +249,6 @@ pub fn descriptors(cfg: &SyntheticConfig) -> Result<Descriptors, String> {
     };
 
     // --- VideoControl ---
-    let ct_skip: &[u8] = &[CT_WINDOW_CONTROL];
     let (ct_bits, pu_bits, pu_size) = match bcd_uvc {
         0x0100 => (18, 16, 2),
         0x0110 => (19, 16, 2),
@@ -263,7 +262,7 @@ pub fn descriptors(cfg: &SyntheticConfig) -> Result<Descriptors, String> {
         objective_focal_length_max: 100,
         ocular_focal_length: 50,
         control_size: 3,
-        controls: control_mask(ct_selector, ct_bits, ct_skip),
+        controls: control_mask(ct_selector, ct_bits, &[]),
     })];
     let mut last = CT_ID;
     if cfg.selector_unit {
