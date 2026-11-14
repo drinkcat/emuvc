@@ -2,8 +2,9 @@
 //!
 //! Input: the device descriptor followed by configuration descriptors — the
 //! format of `/sys/bus/usb/devices/<dev>/descriptors`. Every VideoControl
-//! interface becomes a [`UvcFunction`] with default control ranges; other
-//! interfaces exist (SET_INTERFACE works) but stall class requests.
+//! interface (of every configuration) becomes a [`UvcFunction`] with default
+//! control ranges; other interfaces exist (SET_INTERFACE works) but stall
+//! class requests.
 
 use emuvc_usb::desc::{ConfigHeader, ConfigView, DeviceDescriptor};
 use emuvc_usb::{CompositeDevice, Descriptors, Speed};
@@ -84,16 +85,27 @@ pub fn from_descriptors(
         }
     }
     cfg.apply_strings(&mut desc);
-    let view = ConfigView::parse(&desc.configs[0]).map_err(|e| e.to_string())?;
+    let views = (desc.configs.iter())
+        .map(|c| ConfigView::parse(c).map_err(|e| e.to_string()))
+        .collect::<Result<Vec<_>, _>>()?;
+    let multi = views.len() > 1;
     let mut dev = CompositeDevice::new(format!("generic-{name}"), speed, desc);
-    for (i, vc) in find_video_control_interfaces(&view).into_iter().enumerate() {
-        let f = parse_function(&view, vc, speed).map_err(|e| format!("VC interface {vc}: {e}"))?;
-        let mut uvc = UvcFunction::new(f, speed, cfg.uvc.clone(), &mut |_| cfg.frame_source());
-        if i == 0 {
-            uvc.set_events(cfg.events.clone());
-            uvc.configure_controls(&cfg.controls)?;
+    for view in &views {
+        // Every configuration gets its own functions (interface numbers repeat).
+        let config = if multi { view.header.value } else { 0 };
+        let at = |vc| match multi {
+            true => format!("configuration {}, VC interface {vc}", view.header.value),
+            false => format!("VC interface {vc}"),
+        };
+        for (i, vc) in find_video_control_interfaces(view).into_iter().enumerate() {
+            let f = parse_function(view, vc, speed).map_err(|e| format!("{}: {e}", at(vc)))?;
+            let mut uvc = UvcFunction::new(f, speed, cfg.uvc.clone(), &mut |_| cfg.frame_source());
+            if i == 0 {
+                uvc.set_events(cfg.events.clone());
+                uvc.configure_controls(&cfg.controls)?;
+            }
+            dev.add_config_function(config, &uvc.interfaces(), Box::new(uvc));
         }
-        dev.add_function(&uvc.interfaces(), Box::new(uvc));
     }
     Ok(dev)
 }
