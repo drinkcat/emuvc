@@ -206,10 +206,14 @@ impl UvcFunction {
             match (&e.kind, unit_of(&e.kind)) {
                 (_, Some(unit)) => {
                     for &cs in &e.controls {
-                        let c = if unit == Unit::Camera && cs == CT_REGION_OF_INTEREST_CONTROL {
-                            Some(control::region_of_interest(max_w, max_h))
-                        } else {
-                            control::standard(unit, cs)
+                        let c = match (unit, cs) {
+                            (Unit::Camera, CT_REGION_OF_INTEREST_CONTROL) => {
+                                Some(control::region_of_interest(max_w, max_h))
+                            }
+                            (Unit::Camera, CT_WINDOW_CONTROL) => {
+                                Some(control::digital_window(max_w, max_h))
+                            }
+                            _ => control::standard(unit, cs),
                         };
                         controls.insert((e.id, cs), c.unwrap_or_else(|| Control::raw(1)));
                     }

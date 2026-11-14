@@ -516,6 +516,40 @@ static void check_power_mode(void) {
   expect(uvc_set_ctrl(devh, 0, VC_VIDEO_POWER_MODE_CONTROL, &v, 1) == 1, "power mode restore");
 }
 
+/* Auto modes off (AE manual if GET_RES offers it), so the typed setters of the manual controls run
+ * their success path; manual_restore() puts the auto modes back. */
+static struct { uint8_t unit, sel, old; } autos[8];
+static int nautos;
+static void manual_mode(void) {
+  const uvc_input_terminal_t *ct = uvc_get_camera_terminal(devh);
+  const uvc_processing_unit_t *pu = uvc_get_processing_units(devh);
+  static const struct { uint8_t ct, sel, manual; } A[] = {
+    {1, UVC_CT_AE_MODE_CONTROL, 1}, {1, UVC_CT_FOCUS_AUTO_CONTROL, 0},
+    {0, UVC_PU_WHITE_BALANCE_TEMPERATURE_AUTO_CONTROL, 0}, {0, UVC_PU_WHITE_BALANCE_COMPONENT_AUTO_CONTROL, 0},
+    {0, UVC_PU_HUE_AUTO_CONTROL, 0}, {0, UVC_PU_CONTRAST_AUTO_CONTROL, 0},
+  };
+  nautos = 0;
+  for (unsigned i = 0; i < sizeof A / sizeof *A; i++) {
+    if (A[i].ct ? !ct : !pu) continue;
+    uint8_t unit = A[i].ct ? ct->bTerminalID : pu->bUnitID, old, modes;
+    if (!has_ctrl(unit, A[i].sel) || uvc_get_ctrl(devh, unit, A[i].sel, &old, 1, UVC_GET_CUR) != 1) continue;
+    if (A[i].sel == UVC_CT_AE_MODE_CONTROL &&
+        (uvc_get_ctrl(devh, unit, A[i].sel, &modes, 1, UVC_GET_RES) != 1 || !(modes & A[i].manual))) continue;
+    uint8_t manual = A[i].manual;
+    if (uvc_set_ctrl(devh, unit, A[i].sel, &manual, 1) == 1)
+      autos[nautos].unit = unit, autos[nautos].sel = A[i].sel, autos[nautos++].old = old;
+  }
+}
+static void manual_restore(void) {
+  while (nautos--) uvc_set_ctrl(devh, autos[nautos].unit, autos[nautos].sel, &autos[nautos].old, 1);
+  nautos = 0;
+}
+/* GET and SET, enabled, synchronous: a SET_CUR of the current value must succeed. */
+static int settable(uint8_t unit, uint8_t sel) {
+  int info = ctrl_info(unit, sel);
+  return info >= 0 && (info & (INFO_GET | INFO_SET)) == (INFO_GET | INFO_SET) && !(info & (INFO_DISABLED | INFO_ASYNC));
+}
+
 static void mode_controls(void) {
   expect(open_device() == 0, "open device");
   if (!devh) return;
@@ -528,6 +562,7 @@ static void mode_controls(void) {
     if (uvc_get_power_mode(devh, &pm, UVC_GET_CUR) == UVC_SUCCESS) soft(uvc_set_power_mode(devh, pm));
     else soft(uvc_set_power_mode(devh, UVC_VC_VIDEO_POWER_MODE_FULL)); }
 
+  manual_mode();
   if (have_ct) {
     SIMPLE(scanning_mode, uint8_t);
     SIMPLE(ae_mode, uint8_t);
@@ -595,6 +630,33 @@ static void mode_controls(void) {
     }
   }
   if (have_su) SIMPLE(input_select, uint8_t);
+  /* SIMPLE only counts the setters: with the auto modes off, the typed setters of the manual
+   * controls must accept the current value. */
+#define SETBACK(unit, sel, name, T) do { T v_ = 0; \
+    if (settable(unit, sel) && uvc_get_##name(devh, &v_, UVC_GET_CUR) == UVC_SUCCESS) \
+      expect(uvc_set_##name(devh, v_) == UVC_SUCCESS, "uvc_set_" #name " of the current value"); } while (0)
+  if (have_ct) {
+    uint8_t t = uvc_get_camera_terminal(devh)->bTerminalID;
+    SETBACK(t, UVC_CT_EXPOSURE_TIME_ABSOLUTE_CONTROL, exposure_abs, uint32_t);
+    SETBACK(t, UVC_CT_FOCUS_ABSOLUTE_CONTROL, focus_abs, uint16_t);
+    uint16_t w[6];
+    if (settable(t, UVC_CT_DIGITAL_WINDOW_CONTROL) &&
+        uvc_get_digital_window(devh, &w[0], &w[1], &w[2], &w[3], &w[4], &w[5], UVC_GET_CUR) == UVC_SUCCESS)
+      expect(uvc_set_digital_window(devh, w[0], w[1], w[2], w[3], w[4], w[5]) == UVC_SUCCESS,
+             "uvc_set_digital_window of the current value");
+  }
+  if (have_pu) {
+    uint8_t p = uvc_get_processing_units(devh)->bUnitID;
+    SETBACK(p, UVC_PU_WHITE_BALANCE_TEMPERATURE_CONTROL, white_balance_temperature, uint16_t);
+    SETBACK(p, UVC_PU_HUE_CONTROL, hue, int16_t);
+    SETBACK(p, UVC_PU_CONTRAST_CONTROL, contrast, uint16_t);
+    uint16_t b, r;
+    if (settable(p, UVC_PU_WHITE_BALANCE_COMPONENT_CONTROL) &&
+        uvc_get_white_balance_component(devh, &b, &r, UVC_GET_CUR) == UVC_SUCCESS)
+      expect(uvc_set_white_balance_component(devh, b, r) == UVC_SUCCESS, "uvc_set_white_balance_component of the current value");
+  }
+#undef SETBACK
+  manual_restore();
   check_control_rules();
 
   /* generic extension-unit access */
