@@ -7,6 +7,7 @@
 pub mod config;
 pub mod dfu;
 pub mod generic;
+pub mod logitech_046d_0843;
 pub mod lsusb;
 pub mod luxvisions_30c9_0052;
 pub mod patch;
@@ -30,6 +31,16 @@ pub const MODELS: &[Model] = &[
         name: luxvisions_30c9_0052::NAME,
         description: luxvisions_30c9_0052::DESCRIPTION,
         build: luxvisions_30c9_0052::build,
+    },
+    Model {
+        name: logitech_046d_0843::NAME,
+        description: logitech_046d_0843::DESCRIPTION,
+        build: logitech_046d_0843::build,
+    },
+    Model {
+        name: logitech_046d_0843::NAME_UVC15,
+        description: logitech_046d_0843::DESCRIPTION_UVC15,
+        build: logitech_046d_0843::build_uvc15,
     },
     Model {
         name: generic::NAME,
