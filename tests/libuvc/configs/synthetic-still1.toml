@@ -1,0 +1,5 @@
+# Synthetic camera with still image method 1 (the host takes a video frame: no still descriptors,
+# no trigger control).
+[[device]]
+model = "synthetic"
+synthetic = { still = 1 }
