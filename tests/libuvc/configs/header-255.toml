@@ -1,0 +1,6 @@
+# The longest payload header (bHeaderLength 255): 243 bytes of metadata after PTS/SCR in every
+# payload, as metadata-heavy cameras do (e.g. RealSense D4xx). A frame of 640x480 YUYV carries
+# ~50 KiB of it: hosts that keep metadata must bound it (libuvc keeps 4 KiB per frame).
+[[device]]
+model = "luxvisions-30c9-0052"
+uvc = { header_len = 255 }

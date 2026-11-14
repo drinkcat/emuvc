@@ -1,0 +1,5 @@
+# The probe reply has bFormatIndex 0 and bFrameIndex 0 (some Fuji cameras); uvcvideo keeps the
+# format it asked for. The device streams what was committed.
+[[device]]
+model = "luxvisions-30c9-0052"
+uvc = { probe_cur = { format_index = 0, frame_index = 0 } }
