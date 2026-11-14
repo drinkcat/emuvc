@@ -40,3 +40,15 @@ uses the job summary), `--html DIR` writes annotated sources with gcovr.
 
 `api_test` includes libuvc's internal header (stream interfaces, claim, probe helpers) so it
 needs the libuvc source tree, as `libuvc-test.sh` already does.
+
+## Sanitizers (`scripts/libuvc-asan.sh`)
+
+    scripts/libuvc-asan.sh [-k PATTERN] [-v]
+
+runs the same suite with libuvc and the test programs built with ASan and UBSan
+(`target/libuvc-asan`). The Rust shim is not instrumented, and libasan is preloaded ahead of
+it. A sanitizer report, leaks included, makes a case exit 86: `pass` cases fail, `info` cases
+list it as `86 (sanitizer)`. This is a separate build from the coverage one. Both sets of flags work together,
+but a case stopped by a sanitizer never writes its `.gcda`, and the ASan slowdown does not
+belong in the coverage run. Leak stacks stop at the shim's frames unless
+`ASAN_OPTIONS=fast_unwind_on_malloc=0` is set.
