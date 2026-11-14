@@ -49,6 +49,30 @@ To confirm (from reading code and the other sources):
 - A zero in a discrete interval list ends the interval loop early (patch, S).
 - Class-specific VS descriptors after the endpoints: libuvc reads only altsetting[0].extra (needs standard-descriptor patches, M).
 
+## libuvc issues labelled `emuvc`
+Retested against libuvc master (40136c5) on 2026-11-14:
+- [#282](https://github.com/libuvc/libuvc/issues/282): a probe reply with a different
+  dwMaxPayloadTransferSize, smaller (`issue-282-payload-changes`) or larger as reported (3072,
+  `issue-282-larger-payload`), negotiates and streams since libuvc#292.
+- [#276](https://github.com/libuvc/libuvc/issues/276): GET_MAX reporting dwMaxPayloadTransferSize 0
+  (`issue-276-get-max-zero-payload`) works since libuvc#292. libuvc#320 isn't needed for either, and
+  breaks `zero-max-payload` (a commit with 0 then falls back on the frame size, which no alternate
+  setting fits, so the stream doesn't start).
+- [#270](https://github.com/libuvc/libuvc/issues/270): libuvc has sized SuperSpeed endpoints from
+  wBytesPerInterval since 2019 (86ad964), as uvcvideo does (`ss-burst`).
+- [#267](https://github.com/libuvc/libuvc/issues/267): the ELP 32e4:4689 at 640x360/260 fps, built from
+  the issue's diagnostics: polling uvc_stream_get_frame() doesn't time out (`api-issue-267-elp-260fps`).
+  Open: with a callback, frame delivery collapses above ~240 fps (~30 fps delivered, the rest skipped
+  by libuvc's hand-off) while the CPU isn't the limit. Not understood yet.
+- [#242](https://github.com/libuvc/libuvc/issues/242): a compliant camera with the FT602's descriptors
+  (0403:602a, GREY 1280x1024/30) negotiates. A probe reply that changes bFormatIndex/bFrameIndex
+  gives exactly the reported `Invalid mode (-51)` (`api-probe-zero-index`).
+- [#296](https://github.com/libuvc/libuvc/issues/296): both stop sequences from the report run clean
+  under ASan on Linux (`api-poll` stops a stream while another thread waits in
+  uvc_stream_get_frame). The crash in `usbi_mutex_lock` looks specific to libusb's Windows backend.
+- [#230](https://github.com/libuvc/libuvc/issues/230): button presses reach uvc_set_button_callback()
+  (`api-status-edge`, `api-status-timeout`).
+
 ## Backlog by theme
 **Payloads**: MJPEG with no EOF and no FID toggle (`UVC_QUIRK_MJPEG_NO_EOF`, S); header length
 0/1 (S); HLE 255 (S); frames longer than width x height, header-only frames, MJPEG without SOI

@@ -163,6 +163,9 @@ run_case pts-first-only-mjpeg pass EMUVC_CONFIG="$CFG/pts-first-only.toml" -- -f
 run_case clock-wrap-jitter pass EMUVC_CONFIG="$CFG/clock-wrap-jitter.toml" -- -f mjpeg -s 1280x720 -r 30 -n 60 -t 15
 # 243 bytes of metadata in every payload header: frames intact, metadata bounded.
 run_case header-255 pass EMUVC_CONFIG="$CFG/header-255.toml" -- -f yuyv -s 640x480 -r 30 -n 30 -t 15
+# libuvc #270: SuperSpeed isochronous alternate settings carry bursts (wBytesPerInterval above 1024):
+# libuvc must size them from the endpoint companion descriptor and pick the 4096-byte one.
+CHECK_RE='start streaming .* 4096 bytes/payload' run_case ss-burst pass EMUVC_CONFIG="$CFG/synthetic-iso-ss.toml" -- -f yuyv -s 640x480 -r 30 -n 30 -t 15
 # GET_DEF(brightness) stalls: libuvc must report PIPE for it (a failed check, so stream_test exits 1).
 EXPECT_RC=1 CHECK_RE='FAIL brightness GET_DEF = .*\(Pipe\)' run_case stall-get-def pass EMUVC_CONFIG="$CFG/stall-get-def.toml" -- --controls
 
@@ -174,6 +177,8 @@ for m in info controls convert poll still multi status async negotiate; do
 done
 CHECK_RE='^RESULT mode=info ' run_api api-info-two-devices EMUVC_DEVICE=luxvisions-30c9-0052,luxvisions-30c9-0052 -- info
 CHECK_RE='^RESULT mode=poll ' run_api api-poll-virtual-clock $D $V -- poll
+# libuvc #267: polling uvc_stream_get_frame() at 260 fps, in real time, must not time out.
+CHECK_RE='^RESULT mode=poll ' run_api api-issue-267-elp-260fps EMUVC_CONFIG="$CFG/issue-267-elp-260fps.toml" -- poll
 CHECK_RE='^RESULT mode=poll ' run_api api-poll-no-eof EMUVC_CONFIG="$CFG/no-eof.toml" -- poll
 CHECK_RE='^RESULT mode=convert ' run_api api-convert-no-dht EMUVC_CONFIG="$CFG/no-dht.toml" -- convert
 
@@ -272,7 +277,8 @@ CHECK_RE='uvc_set_power_mode\(UVC_VC_VIDEO_POWER_MODE_FULL\) writes 0x00: Succes
   TEST_BIN=api_test run_case api-power-mode-enum pass EMUVC_CONFIG="$CFG/synthetic-default.toml" -- controls
 
 # Issue reproductions (configs/issue-*.toml) libuvc handles now: all modes, strict.
-for c in issue-193-zero-packet-alt issue-276-get-max-zero-payload issue-282-payload-changes issue-336-step-zero; do
+for c in issue-193-zero-packet-alt issue-276-get-max-zero-payload issue-282-payload-changes issue-282-larger-payload \
+         issue-336-step-zero; do
   CHECK_RE='^RESULT mode=wrap ' run_api "api-$c" EMUVC_CONFIG="$CFG/$c.toml" $V -- -m 1500 all
 done
 

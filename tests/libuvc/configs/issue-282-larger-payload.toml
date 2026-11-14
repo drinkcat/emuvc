@@ -1,0 +1,5 @@
+# libuvc #282 with the reporter's numbers: the probe GET_CUR reply has a larger dwMaxPayloadTransferSize
+# (3072) than libuvc asked for, on a camera whose largest alternate setting carries 3072 bytes.
+[[device]]
+model = "synthetic"
+uvc = { probe_cur = { max_payload_transfer_size = 3072 } }
