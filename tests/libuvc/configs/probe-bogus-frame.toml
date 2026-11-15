@@ -1,0 +1,5 @@
+# The probe reply names a frame that doesn't exist (bFrameIndex 0x7f) and leaves
+# dwMaxVideoFrameSize at 0, so a host can't take the size from the frame descriptor either.
+[[device]]
+model = "luxvisions-30c9-0052"
+uvc = { probe_cur = { frame_index = 0x7f, max_video_frame_size = 0 } }

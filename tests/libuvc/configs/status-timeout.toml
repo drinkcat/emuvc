@@ -1,0 +1,18 @@
+# The status interrupt endpoint fails its first three transfers with a timeout (the host's URB
+# completes with TIMED_OUT). Hosts must keep polling: the button press and control change that
+# follow still arrive.
+[[device]]
+model = "synthetic"
+
+[[device.fault]]
+on = { data_in = { ep = 0x87 } }
+action = { error = "timeout" }
+count = 3
+
+[[device.event]]
+at_ms = 300
+kind = "button"
+
+[[device.event]]
+at_ms = 300
+kind = { control = { entity = 3, selector = 0x02, value = [7, 0] } }

@@ -1,0 +1,6 @@
+# dwMaxPayloadTransferSize 0xffff0400 in every probe/commit reply: 1024 with the upper half set,
+# which the kernel attributes to a sign extension in Chicony firmware and masks. No alternate setting
+# is that large, so a host that takes the value as is can't pick one.
+[[device]]
+model = "luxvisions-30c9-0052"
+uvc = { max_payload_transfer_size = 0xffff0400 }

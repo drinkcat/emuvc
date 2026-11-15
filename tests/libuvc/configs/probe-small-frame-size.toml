@@ -1,0 +1,5 @@
+# The probe reply's dwMaxVideoFrameSize is 4 KiB whatever the format, smaller than every frame.
+# Hosts that size frame buffers from it must not overrun them.
+[[device]]
+model = "luxvisions-30c9-0052"
+uvc = { probe_cur = { max_video_frame_size = 4096 } }

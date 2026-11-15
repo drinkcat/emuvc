@@ -13,6 +13,8 @@ kind = { raw = [1] }                     # bStatusType only
 [[device.event]]
 kind = { raw = [1, 3, 0, 2] }            # VC, no bAttribute
 [[device.event]]
+kind = { raw = [2, 1] }                  # VS, no bEvent
+[[device.event]]
 kind = { raw = [2, 1, 0] }               # VS button press without bValue
 [[device.event]]
 kind = { raw = [0, 3, 0, 2, 0, 5, 0] }   # originator 0 (reserved)
