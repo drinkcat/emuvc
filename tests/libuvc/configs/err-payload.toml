@@ -1,0 +1,5 @@
+# The ERR bit on a single payload in the middle of every 3rd frame. The frame misses that payload's
+# data: hosts must drop it (or flag it), not deliver it as a good frame.
+[[device]]
+model = "luxvisions-30c9-0052"
+uvc = { err_payload = 3 }

@@ -180,7 +180,8 @@ impl ProbeOverride {
 pub struct StreamQuirks {
     pub idle: IdlePayload,
     /// Payload header length (default 12 = PTS + SCR; 2 = none, 6 = PTS).
-    /// Longer headers carry metadata bytes after the SCR.
+    /// Longer headers carry metadata bytes after the SCR. 0 and 1 are bogus: the
+    /// payload is that bHeaderLength byte alone, then frame data.
     pub header_len: Option<u8>,
     /// Set the PTS and SCR flags whatever the header length (bogus headers).
     pub lie_pts_scr: bool,
@@ -190,6 +191,12 @@ pub struct StreamQuirks {
     pub no_fid_toggle: bool,
     /// Set the ERR bit on every Nth frame's payloads.
     pub err_every: Option<u32>,
+    /// Set the ERR bit on a single payload in the middle of every Nth frame (the one
+    /// that carries the frame's middle byte); the frame's other payloads are fine.
+    pub err_payload: Option<u32>,
+    /// Send EOF in a header-only payload after each frame's last data payload,
+    /// rather than on it (uvcvideo: "EOF in empty payload").
+    pub eof_payload: bool,
     /// Silently skip every Nth frame.
     pub drop_every: Option<u32>,
     /// Send only the first half of every Nth frame (then EOF).
@@ -292,6 +299,8 @@ struct FrameTx {
     offset: usize,
     pts: u32,
     error: bool,
+    /// Byte offset whose payload gets the ERR bit (`err_payload`).
+    error_at: Option<usize>,
     still: bool,
 }
 
@@ -419,8 +428,14 @@ impl VsInterface {
             .map_or_else(|| StreamingControl::len_for(self.bcd_uvc), |l| l as usize)
     }
 
+    /// bHeaderLength.
     fn header_len(&self) -> usize {
-        self.quirks.header_len.map_or(12, |n| n.max(2) as usize)
+        self.quirks.header_len.map_or(12, |n| n as usize)
+    }
+
+    /// Bytes the payload header takes (a bogus bHeaderLength 0 or 1 still takes its byte).
+    fn header_bytes(&self) -> usize {
+        self.header_len().max(1)
     }
 
     fn default_probe(&self) -> StreamingControl {
@@ -463,7 +478,7 @@ impl VsInterface {
                     _ => frame.max_bit_rate as f64 / 8.0,
                 };
                 // Payload capacity per second of an alt setting, after headers.
-                let hlen = self.header_len();
+                let hlen = self.header_bytes();
                 let capacity = |a: &crate::topology::IsoAlt| {
                     a.bytes_per_interval.saturating_sub(hlen) as f64 * 8000.0
                         / a.interval_uframes.max(1) as f64
@@ -789,6 +804,7 @@ impl VsInterface {
             offset: 0,
             pts,
             error: false,
+            error_at: None,
             still: true,
         })
     }
@@ -951,6 +967,7 @@ impl VsInterface {
         }
         let truncate = every(self.quirks.truncate_every);
         let error = every(self.quirks.err_every);
+        let error_mid = every(self.quirks.err_payload);
         let captured_ns = st.start_ns + latest * st.interval_ns;
         let (spec, interval_ns) = (st.spec, st.interval_ns);
         // Method 2 still capture: this frame is the still image.
@@ -970,12 +987,16 @@ impl VsInterface {
                 offset: 0,
                 pts: self.pts(latest, captured_ns, interval_ns),
                 error,
+                error_at: None,
                 still: false,
             });
         }
         let mut tx = tx.unwrap();
         if truncate {
             tx.data.truncate(tx.data.len() / 2);
+        }
+        if error_mid {
+            tx.error_at = Some(tx.data.len() / 2);
         }
         let st = self.stream.as_mut().unwrap();
         if !self.quirks.no_fid_toggle {
@@ -985,7 +1006,8 @@ impl VsInterface {
     }
 
     /// Writes a payload header for `f` (or an idle header) into `out`; `first`: the
-    /// payload starts the frame.
+    /// payload starts the frame, `err`: set the ERR bit on this payload.
+    #[allow(clippy::too_many_arguments)]
     fn header(
         &self,
         out: &mut Vec<u8>,
@@ -993,9 +1015,15 @@ impl VsInterface {
         f: Option<&FrameTx>,
         first: bool,
         eof: bool,
+        err: bool,
         now: BusTime,
     ) {
         let mut hlen = self.header_len();
+        if hlen < 2 {
+            // Bogus bHeaderLength: nothing but that byte.
+            out.push(hlen as u8);
+            return;
+        }
         let pts = hlen >= 6 && (first || !self.quirks.clock.pts_first_only);
         if hlen >= 6 && !pts {
             hlen -= 4;
@@ -1011,7 +1039,7 @@ impl VsInterface {
         if eof && !self.quirks.no_eof {
             info |= HDR_EOF;
         }
-        if f.is_some_and(|f| f.error) {
+        if err || f.is_some_and(|f| f.error) {
             info |= HDR_ERR;
         }
         if f.is_some_and(|f| f.still) {
@@ -1051,24 +1079,31 @@ impl VsInterface {
     /// Builds the next payload of at most `cap` bytes. `None`: nothing to send.
     fn payload(&mut self, now: BusTime, cap: usize) -> Option<Vec<u8>> {
         self.pick_frame(now * UFRAME_NS);
-        let hlen = self.header_len();
+        let hlen = self.header_bytes();
         if cap < hlen {
             // The host's packet can't even hold a header.
             return None;
         }
+        let eof_payload = self.quirks.eof_payload;
         let mut st = self.stream.take()?;
         let mut out = Vec::with_capacity(cap.min(st.payload_size.max(hlen)));
         let mut body = Vec::new();
         let first = st.cur.as_ref().is_some_and(|f| f.offset == 0);
-        let eof = match st.cur.as_mut() {
+        let (eof, err) = match st.cur.as_mut() {
             Some(f) => {
-                let (data, eof) = Self::chunk(f, cap - hlen);
+                let start = f.offset;
+                let (data, mut eof) = Self::chunk(f, cap - hlen);
                 body.extend_from_slice(data);
-                eof
+                let err = f.error_at.is_some_and(|o| (start..f.offset).contains(&o));
+                if eof_payload && !body.is_empty() {
+                    // EOF comes in a header-only payload of its own, next time.
+                    eof = false;
+                }
+                (eof, err)
             }
-            None => false,
+            None => (false, false),
         };
-        self.header(&mut out, st.fid, st.cur.as_ref(), first, eof, now);
+        self.header(&mut out, st.fid, st.cur.as_ref(), first, eof, err, now);
         out.extend_from_slice(&body);
         if eof {
             let f = st.cur.take().unwrap();
@@ -1100,7 +1135,7 @@ impl VsInterface {
     /// One bulk transfer: a payload, or `None` (NAK) between frames.
     pub fn bulk_in(&mut self, cx: &mut Ctx, max_len: usize) -> Option<Vec<u8>> {
         let st = self.stream.as_ref()?;
-        let cap = max_len.min(st.payload_size.max(self.header_len() + 1));
+        let cap = max_len.min(st.payload_size.max(self.header_bytes() + 1));
         self.pick_frame(cx.now_ns());
         self.stream.as_ref()?.cur.as_ref()?;
         self.payload(cx.now(), cap)
@@ -1108,13 +1143,13 @@ impl VsInterface {
 
     /// Method 3: one transfer on the still image bulk endpoint.
     pub fn still_in(&mut self, cx: &mut Ctx, max_len: usize) -> Option<Vec<u8>> {
-        let hlen = self.header_len();
+        let hlen = self.header_bytes();
         let mut f = self.still_tx.take()?;
         let first = f.offset == 0;
         let (data, eof) = Self::chunk(&mut f, max_len.saturating_sub(hlen));
         let body = data.to_vec();
         let mut out = Vec::with_capacity(hlen + body.len());
-        self.header(&mut out, false, Some(&f), first, eof, cx.now());
+        self.header(&mut out, false, Some(&f), first, eof, false, cx.now());
         out.extend_from_slice(&body);
         if eof {
             self.trigger = TRIGGER_NORMAL;

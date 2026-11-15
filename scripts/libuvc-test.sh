@@ -168,6 +168,13 @@ run_case pts-first-only-mjpeg pass EMUVC_CONFIG="$CFG/pts-first-only.toml" -- -f
 run_case clock-wrap-jitter pass EMUVC_CONFIG="$CFG/clock-wrap-jitter.toml" -- -f mjpeg -s 1280x720 -r 30 -n 60 -t 15
 # 243 bytes of metadata in every payload header: frames intact, metadata bounded.
 run_case header-255 pass EMUVC_CONFIG="$CFG/header-255.toml" -- -f yuyv -s 640x480 -r 30 -n 30 -t 15
+# EOF in a header-only payload after each frame's data (the FID still toggles): frames intact.
+run_case eof-payload pass EMUVC_CONFIG="$CFG/eof-payload.toml" -- -f yuyv -s 640x480 -r 30 -n 30 -t 15
+BUG="EOF in a header-only payload is ignored (checked only when the payload has data): without an FID toggle, MJPEG frames never end" \
+  run_case eof-payload-no-fid bug EMUVC_CONFIG="$CFG/eof-payload-no-fid.toml" -- -f mjpeg -s 640x480 -r 30 -n 30 -t 15
+# ERR on one payload in the middle of every 3rd frame: those frames may be dropped, not delivered with a hole.
+BUG="ERR on one payload: libuvc drops that payload only, and delivers the frame with a hole" \
+  run_case err-payload bug EMUVC_CONFIG="$CFG/err-payload.toml" -- -f yuyv -s 640x480 -r 30 -n 30 -t 20 --allow-gaps
 # libuvc #270: SuperSpeed isochronous alternate settings carry bursts (wBytesPerInterval above 1024):
 # libuvc must size them from the endpoint companion descriptor and pick the 4096-byte one.
 CHECK_RE='start streaming .* 4096 bytes/payload' run_case ss-burst pass EMUVC_CONFIG="$CFG/synthetic-iso-ss.toml" -- -f yuyv -s 640x480 -r 30 -n 30 -t 15
@@ -189,13 +196,14 @@ CHECK_RE='^RESULT mode=poll ' run_api api-poll-no-eof EMUVC_CONFIG="$CFG/no-eof.
 CHECK_RE='^RESULT mode=convert ' run_api api-convert-no-dht EMUVC_CONFIG="$CFG/no-dht.toml" -- convert
 
 # Quirky-but-working devices: the API must behave as on the default device (strict).
-for c in header-6 header-long header-255 idle-zlp probe-len-26 probe-no-frame-size startup-delay no-fid-toggle pts-first-only \
+for c in header-6 header-long header-255 eof-payload idle-zlp probe-len-26 probe-no-frame-size startup-delay no-fid-toggle pts-first-only \
          clock-wrap-jitter; do
   CHECK_RE='^RESULT mode=poll ' run_api "api-poll-$c" EMUVC_CONFIG="$CFG/$c.toml" -- poll negotiate
 done
 # Misbehaving devices: -l counts failed expectations as soft; crashes and hangs still fail.
-for c in err-bit drop-truncate header-2 header-lie header-lie-scr probe-len-34-strict ignore-format iso-faults disconnect \
-         bogus-header bulk-faults probe-small-frame-size probe-bogus-frame; do
+for c in err-bit drop-truncate header-2 header-lie header-lie-scr header-len-0 header-len-1 mjpeg-no-eof-no-fid \
+         probe-len-34-strict ignore-format iso-faults disconnect bogus-header bulk-faults probe-small-frame-size \
+         probe-bogus-frame; do
   CHECK_RE='^RESULT mode=negotiate ' run_api "api-fault-$c" EMUVC_CONFIG="$CFG/$c.toml" -- -l poll still status negotiate
 done
 

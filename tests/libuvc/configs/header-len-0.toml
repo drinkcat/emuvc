@@ -1,0 +1,4 @@
+# bHeaderLength 0 in every payload, then frame data: no header at all (uvcvideo drops such payloads).
+[[device]]
+model = "luxvisions-30c9-0052"
+uvc = { header_len = 0 }
