@@ -3,11 +3,13 @@
 //! Completions from the host engine are queued on the context and handed to
 //! the application inside `libusb_handle_events*`, on the calling thread,
 //! following libusb's event-lock protocol: one thread at a time handles
-//! events; others wait for it to finish a cycle. Synchronous transfers are
+//! events; others wait for it to finish a cycle. libusb_close takes that lock
+//! too, so no callback runs while a handle goes away. Synchronous transfers are
 //! built on the async API exactly like in libusb, so callbacks of unrelated
 //! transfers may run inside `libusb_control_transfer` too.
 
 use std::alloc::{Layout, alloc_zeroed, dealloc};
+use std::cell::Cell;
 use std::collections::{HashSet, VecDeque};
 use std::ffi::{c_int, c_uchar, c_uint, c_void};
 use std::mem::offset_of;
@@ -33,6 +35,8 @@ struct Block {
     iso_alloc: usize,
     state: AtomicU8,
     urb: AtomicU64,
+    /// Killed by libusb_release_interface: completes as COMPLETED with no data.
+    killed: std::sync::atomic::AtomicBool,
     t: libusb_transfer,
 }
 
@@ -115,6 +119,13 @@ pub unsafe extern "C" fn libusb_submit_transfer(transfer: *mut libusb_transfer) 
         if b.state.load(Ordering::Acquire) != IDLE {
             return LIBUSB_ERROR_BUSY;
         }
+        if t.type_ != LIBUSB_TRANSFER_TYPE_CONTROL {
+            let r = crate::core::check_claimed(h, t.endpoint);
+            if r != LIBUSB_SUCCESS {
+                return r;
+            }
+        }
+        b.killed.store(false, Ordering::Release);
         let dev = h.info().id;
         let len = t.length.max(0) as usize;
         let buf: &[u8] = if t.buffer.is_null() {
@@ -294,6 +305,14 @@ unsafe fn complete(transfer: *mut libusb_transfer, c: Completion) {
             }
         }
         t.status = transfer_status(c.status);
+        if block(transfer).killed.swap(false, Ordering::AcqRel) {
+            t.status = LIBUSB_TRANSFER_COMPLETED;
+            t.actual_length = 0;
+            for d in iso_descs(transfer).iter_mut() {
+                d.status = LIBUSB_TRANSFER_COMPLETED;
+                d.actual_length = 0;
+            }
+        }
         if let Some(h) = handle_ref(t.dev_handle) {
             h.inflight.lock().unwrap().remove(&(transfer as usize));
         }
@@ -306,6 +325,17 @@ unsafe fn complete(transfer: *mut libusb_transfer, c: Completion) {
             libusb_free_transfer(transfer);
         }
     }
+}
+
+/// Marks a transfer killed by libusb_release_interface (as usbfs kills the URBs of a released
+/// interface): libusb then reports it as completed, with no data.
+pub(crate) unsafe fn kill(transfer: *mut libusb_transfer) {
+    unsafe { block(transfer).killed.store(true, Ordering::Release) };
+}
+
+/// Killed, and its completion not reaped yet.
+pub(crate) unsafe fn killed(transfer: *mut libusb_transfer) -> bool {
+    unsafe { block(transfer).killed.load(Ordering::Acquire) }
 }
 
 /// Detaches a transfer from its URB (handle closed while in flight).
@@ -329,6 +359,8 @@ struct EvState {
     interrupts: u64,
     /// Bumped whenever an event handler releases the lock.
     cycles: u64,
+    /// Threads in libusb_close waiting for the lock: event handlers yield it to them.
+    closing: u32,
     /// URBs whose transfer was discarded by libusb_close: drop their completions.
     orphans: HashSet<u64>,
     /// The context is gone (libusb_exit): drop every completion.
@@ -339,6 +371,11 @@ struct EvState {
 pub struct Events {
     m: Mutex<EvState>,
     cv: Condvar,
+}
+
+thread_local! {
+    /// The `Events` whose lock this thread holds (libusb's event_handling_key), 0 if none.
+    static HANDLING: Cell<usize> = const { Cell::new(0) };
 }
 
 impl Events {
@@ -370,6 +407,41 @@ impl Events {
     pub fn interrupt(&self) {
         self.m.lock().unwrap().interrupts += 1;
         self.cv.notify_all();
+    }
+
+    fn take(&self, g: &mut EvState) {
+        g.locked = true;
+        HANDLING.set(self as *const Self as usize);
+    }
+
+    /// This thread holds the events lock: it handles events, or runs a transfer callback.
+    pub fn held_here(&self) -> bool {
+        HANDLING.get() == self as *const Self as usize
+    }
+
+    /// For libusb_close, like libusb: interrupts the event handler and takes the events lock,
+    /// so that no transfer callback runs (and none can resubmit to the handle) while the handle
+    /// goes away. Handlers don't take the lock while a close waits for it. False when this
+    /// thread already holds it: a callback closing the handle, or the program's own handler.
+    pub fn lock_for_close(&self) -> bool {
+        if self.held_here() {
+            return false;
+        }
+        let mut g = self.m.lock().unwrap();
+        g.closing += 1;
+        g.interrupts += 1;
+        self.cv.notify_all();
+        while g.locked {
+            g = self.cv.wait(g).unwrap();
+        }
+        g.closing -= 1;
+        self.take(&mut g);
+        true
+    }
+
+    pub fn unlock(&self) {
+        let g = self.m.lock().unwrap();
+        self.release(g);
     }
 
     /// Waits on the condvar until `deadline`; returns None on timeout.
@@ -420,6 +492,7 @@ impl Events {
     fn release(&self, mut g: MutexGuard<'_, EvState>) {
         g.locked = false;
         g.cycles += 1;
+        HANDLING.set(0);
         drop(g);
         self.cv.notify_all();
     }
@@ -447,13 +520,14 @@ unsafe fn handle_events(
         if unsafe { is_set(completed) } {
             return LIBUSB_SUCCESS;
         }
-        if !g.locked {
-            g.locked = true;
+        if !g.locked && g.closing == 0 {
+            ev.take(&mut g);
             break;
         }
-        // Another thread is handling events; wait for it to finish a cycle.
-        let cycles = g.cycles;
-        while g.locked && g.cycles == cycles {
+        // Another thread is handling events, or closing a handle: wait for it to finish a cycle,
+        // and return if interrupted meanwhile (libusb_close interrupts event handlers).
+        let (cycles, interrupts) = (g.cycles, g.interrupts);
+        while (g.locked || g.closing > 0) && g.cycles == cycles {
             match ev.wait(g, deadline) {
                 Some(ng) => g = ng,
                 None => return LIBUSB_SUCCESS,
@@ -461,6 +535,9 @@ unsafe fn handle_events(
             if unsafe { is_set(completed) } {
                 return LIBUSB_SUCCESS;
             }
+        }
+        if g.interrupts != interrupts {
+            return LIBUSB_SUCCESS;
         }
     }
     let g = unsafe { ev.run_cycle(g, deadline, completed) };
@@ -532,10 +609,10 @@ pub unsafe extern "C" fn libusb_try_lock_events(ctx: *mut libusb_context) -> c_i
         return 1;
     };
     let mut g = c.events.m.lock().unwrap();
-    if g.locked {
+    if g.locked || g.closing > 0 {
         return 1;
     }
-    g.locked = true;
+    c.events.take(&mut g);
     0
 }
 
@@ -548,7 +625,7 @@ pub unsafe extern "C" fn libusb_lock_events(ctx: *mut libusb_context) {
     while g.locked {
         g = c.events.cv.wait(g).unwrap();
     }
-    g.locked = true;
+    c.events.take(&mut g);
 }
 
 #[unsafe(no_mangle)]
@@ -560,9 +637,10 @@ pub unsafe extern "C" fn libusb_unlock_events(ctx: *mut libusb_context) {
     c.events.release(g);
 }
 
+/// 0 while a libusb_close waits for the events lock: the handler should give it up.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn libusb_event_handling_ok(_ctx: *mut libusb_context) -> c_int {
-    1
+pub unsafe extern "C" fn libusb_event_handling_ok(ctx: *mut libusb_context) -> c_int {
+    unsafe { ctx_ref(ctx) }.map_or(1, |c| (c.events.m.lock().unwrap().closing == 0) as c_int)
 }
 
 #[unsafe(no_mangle)]

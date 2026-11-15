@@ -809,6 +809,24 @@ pub unsafe extern "C" fn libusb_close(handle: *mut libusb_device_handle) {
             unsafe { libusb_release_interface(handle, i) };
         }
     }
+    let events = h.context().events.clone();
+    // On Linux, an event handler blocked in poll reaps a URB as soon as the kernel kills it (as
+    // releasing an interface does), usually before the program gets to close the handle. Give
+    // the handler a moment to reap those (unless it is this thread).
+    let killed = || {
+        h.inflight
+            .lock()
+            .unwrap()
+            .keys()
+            .any(|&t| unsafe { transfer::killed(t as *mut libusb_transfer) })
+    };
+    let deadline = std::time::Instant::now() + Duration::from_millis(100);
+    while !events.held_here() && killed() && std::time::Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    // Like libusb, close with the events lock held: a callback running now (which may resubmit
+    // its transfer) finishes first, and none runs for this handle after.
+    let locked = events.lock_for_close();
     // Like libusb (and the kernel closing the usbfs fd), discard transfers
     // still in flight: they never complete and may be freed right away.
     let inflight: Vec<(usize, u64)> = h.inflight.lock().unwrap().drain().collect();
@@ -817,19 +835,20 @@ pub unsafe extern "C" fn libusb_close(handle: *mut libusb_device_handle) {
             "emuvc: device handle closed with {} transfer(s) in flight",
             inflight.len()
         );
-        h.context()
-            .events
-            .orphan(inflight.iter().map(|&(_, id)| id));
+        events.orphan(inflight.iter().map(|&(_, id)| id));
         for (t, id) in inflight {
             h.host().cancel(id);
             unsafe { transfer::mark_idle(t as *mut libusb_transfer) };
         }
     }
-    // Like libusb, closing a handle wakes up event handlers.
-    h.context().events.interrupt();
     let dev = h.dev;
     drop(unsafe { Box::from_raw(handle as *mut Handle) });
     unsafe { libusb_unref_device(dev as *mut libusb_device) };
+    if locked {
+        events.unlock();
+    }
+    // Like libusb, closing a handle wakes up event handlers.
+    events.interrupt();
 }
 
 #[unsafe(no_mangle)]
@@ -878,6 +897,49 @@ pub unsafe extern "C" fn libusb_set_configuration(
         Err(UsbError::Stall) => LIBUSB_ERROR_NOT_FOUND,
         Err(e) => error_code(e),
     }
+}
+
+/// Interface (of the active configuration) that has endpoint `ep`, in any alternate setting.
+pub(crate) fn endpoint_interface(info: &DeviceInfo, ep: u8) -> Option<u8> {
+    active_view(info)?
+        .interfaces
+        .iter()
+        .find(|i| {
+            i.alts
+                .iter()
+                .any(|a| a.endpoints.iter().any(|e| e.desc.address == ep))
+        })
+        .map(|i| i.number)
+}
+
+/// Like usbfs (checkintf): a transfer on an interface the handle hasn't claimed claims it
+/// implicitly, or fails with BUSY when a kernel driver has it. Either way the program is
+/// wrong, which emuvc reports on stderr ("libusb misuse").
+pub(crate) fn check_claimed(h: &Handle, ep: u8) -> c_int {
+    let info = h.info();
+    let Some(i) = endpoint_interface(info, ep) else {
+        return LIBUSB_SUCCESS;
+    };
+    let bit = 1u64 << (i & 63);
+    if *h.claimed.lock().unwrap() & bit != 0 {
+        return LIBUSB_SUCCESS;
+    }
+    let drv = h.context().bus.drivers(info);
+    let busy = drv.bound & bit != 0 && drv.detached & bit == 0;
+    eprintln!(
+        "emuvc: libusb misuse: transfer on endpoint 0x{ep:02x} of interface {i}, which this handle \
+         hasn't claimed ({})",
+        if busy {
+            "a kernel driver has it: BUSY"
+        } else {
+            "claimed implicitly, as usbfs does"
+        }
+    );
+    if busy {
+        return LIBUSB_ERROR_BUSY;
+    }
+    *h.claimed.lock().unwrap() |= bit;
+    LIBUSB_SUCCESS
 }
 
 fn interface_exists(info: &DeviceInfo, iface: c_int) -> bool {
@@ -957,6 +1019,23 @@ pub unsafe extern "C" fn libusb_release_interface(
         .lock()
         .unwrap()
         .remove(&(h.info().id, interface_number as u8));
+    // Like usbfs, releasing an interface kills its URBs. libusb reports a URB killed under it
+    // (one it didn't cancel itself) as completed, with no data.
+    let killed: Vec<(usize, u64)> = h
+        .inflight
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|(&t, &id)| (t, id))
+        .filter(|&(t, _)| {
+            let ep = unsafe { (*(t as *const libusb_transfer)).endpoint };
+            ep & 0x0f != 0 && endpoint_interface(h.info(), ep) == Some(interface_number as u8)
+        })
+        .collect();
+    for (t, id) in killed {
+        unsafe { transfer::kill(t as *mut libusb_transfer) };
+        h.host().cancel(id);
+    }
     if h.auto_detach.load(Ordering::Relaxed) {
         unsafe { libusb_attach_kernel_driver(handle, interface_number) };
     }
