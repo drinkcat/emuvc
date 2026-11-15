@@ -97,7 +97,8 @@ impl Default for SyntheticConfig {
             status_endpoint: true,
             status_packet_size: 16,
             selector_unit: true,
-            // libuvc rejects devices with encoding units (unknown VC subtype).
+            // Off: encoding unit controls aren't emulated (libuvc rejected such devices before
+            // libuvc#358).
             encoding_unit: false,
             extension_units: 2,
             extra_formats: false,

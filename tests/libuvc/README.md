@@ -33,8 +33,8 @@ Runs libuvc (built out of tree, never modified) against the emuvc libusb shim
 * `c930e-*` and `api-c930e` stream from the Logitech C930e model (`logitech-046d-0843`). libuvc
   only parses configuration index 0, the UVC 1.0 one, and must ignore configuration 2 (UVC 1.5,
   encoding unit, H.264). `c930e-uvc15-yuyv` and `api-c930e-uvc15` keep only the UVC 1.5
-  configuration. libuvc should still stream YUYV from it, but rejects the camera over the encoding
-  unit (known bug).
+  configuration: libuvc streams YUYV from it since libuvc#358 skips the encoding unit (it rejected
+  the camera, libuvc#348).
 * `configs/*.toml` are emulator configs for the fault/quirk cases. `EXPECT_RC=N` makes a
   `pass` case expect exit N, for checked failures (stall-get-def: libuvc must report PIPE).
   `issue-*.toml` reproduce libuvc issues: libuvc handles some now (`pass`), some devices are
