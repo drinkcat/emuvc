@@ -302,6 +302,10 @@ BUG="libuvc#297: uvc_get_stream_ctrl_format_size() truncates 10000000 / interval
 BUG="libuvc probes before sending any SET_INTERFACE (uvcvideo's uvc_video_init selects alt 0 first): the XBox Live Vision camera stalls" \
   CHECK_RE='^RESULT mode=poll ' TEST_BIN=api_test run_case api-need-set-interface bug EMUVC_CONFIG="$CFG/need-set-interface.toml" -- poll
 
+# A method 2 still image larger than the video frames (libuvc#256, libuvc PR #281): it must arrive whole.
+BUG="libuvc#256: a method 2 still larger than the video frames doesn't fit the frame buffer, sized from the video's dwMaxVideoFrameSize" \
+  CHECK_RE='^RESULT mode=stillbig ' TEST_BIN=api_test run_case api-still-larger bug EMUVC_CONFIG="$CFG/synthetic-default.toml" $V -- stillbig
+
 # Asynchronous controls (UVC 1.5 2.4.4): completions and a Control Failure Change reach the status callback.
 CHECK_RE='async_ok=[2-9] async_failed=1' run_api api-async-completion EMUVC_CONFIG="$CFG/synthetic-async.toml" -- async
 # Status packets at the edges of 2.4.2.2: malformed ones are dropped, well-formed ones still arrive.

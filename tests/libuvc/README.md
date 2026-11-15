@@ -59,7 +59,8 @@ Runs libuvc (built out of tree, never modified) against the emuvc libusb shim
 `open` only lists, finds and opens the device, and prints the outcome for the descriptor cases; with
 `-x` it leaves the device open for `uvc_exit()` to close; `absent`, not part of `all`, calls the typed
 controls of the units the device lacks, which must fail cleanly; `soak`, not part of `all` either,
-opens, streams, stops and closes 20 times in one context). It discovers
+opens, streams, stops and closes 20 times in one context; `stillbig`, explicit too, triggers a method 2
+still larger than the video frames, which must arrive whole). It discovers
 what the device offers through libuvc itself (formats, units, extension units, still
 patterns, streaming interfaces), so richer emulated devices raise coverage without code
 changes. Calls a device cannot serve are counted as "soft"; failures are crashes/hangs

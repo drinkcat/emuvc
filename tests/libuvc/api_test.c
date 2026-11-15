@@ -1131,6 +1131,49 @@ static void mode_still(void) {
   printf("RESULT_EXTRA still_supported=%d\n", supported);
 }
 
+/* ================= stillbig ================= */
+/* A method 2 still image larger than the video frames (libuvc#256): the still must arrive whole.
+ * Not part of `all`: libuvc sizes its frame buffer from the video's dwMaxVideoFrameSize. */
+static void mode_stillbig(void) {
+  expect(open_device() == 0, "open device");
+  if (!devh) return;
+  for (const uvc_format_desc_t *f = uvc_get_format_descs(devh); f; f = f->next) {
+    if (f->bDescriptorSubtype != UVC_VS_FORMAT_UNCOMPRESSED || !f->bBitsPerPixel || !f->still_frame_desc ||
+        fmt_of(f) == UVC_FRAME_FORMAT_UNKNOWN) continue;
+    const uvc_still_frame_res_t *s = NULL;
+    for (const uvc_still_frame_res_t *r = f->still_frame_desc->imageSizePatterns; r; r = r->next)
+      if (!s || (uint32_t)r->wWidth * r->wHeight > (uint32_t)s->wWidth * s->wHeight) s = r;
+    const uvc_frame_desc_t *fr = smallest_frame(f);
+    if (!s || !fr) continue;
+    size_t still_bytes = (size_t)s->wWidth * s->wHeight * f->bBitsPerPixel / 8;
+    size_t video_bytes = (size_t)fr->wWidth * fr->wHeight * f->bBitsPerPixel / 8;
+    if (still_bytes <= video_bytes) continue;
+    uvc_stream_ctrl_t c; uvc_still_ctrl_t sc; uvc_stream_handle_t *st;
+    memset(&sc, 0, sizeof sc);
+    if (soft(ctrl_for(f, fr, default_interval(fr), &c)) < 0) return;
+    expect(uvc_get_still_ctrl_format_size(devh, &c, &sc, s->wWidth, s->wHeight) == UVC_SUCCESS, "still %ux%u negotiated",
+           s->wWidth, s->wHeight);
+    if (soft(uvc_stream_open_ctrl(devh, &st, &c)) < 0) return;
+    int got_still = 0;
+    if (soft(uvc_stream_start(st, NULL, NULL, 0)) >= 0) {
+      uvc_frame_t *fp = NULL;
+      uvc_stream_get_frame(st, &fp, 2000000);
+      if (soft(uvc_trigger_still(devh, &sc)) >= 0)
+        for (int i = 0; i < 10 && !got_still; i++) {
+          fp = NULL;
+          if (uvc_stream_get_frame(st, &fp, 1000000) == UVC_SUCCESS && fp && fp->data_bytes == still_bytes) got_still = 1;
+        }
+      uvc_stream_stop(st);
+    }
+    uvc_stream_close(st);
+    printf("  still %ux%u (%zu bytes) over %ux%u video (%zu bytes): %s\n", s->wWidth, s->wHeight, still_bytes, fr->wWidth,
+           fr->wHeight, video_bytes, got_still ? "whole" : "not received whole");
+    expect(got_still, "a whole still frame of %zu bytes over %zu-byte video frames", still_bytes, video_bytes);
+    return;
+  }
+  expect(0, "no format with a still image larger than a video frame");
+}
+
 /* ================= multi ================= */
 static void mode_multi(void) {
   expect(open_device() == 0, "open device");
@@ -1537,10 +1580,11 @@ static const struct { const char *name; mode_fn fn; int not_in_all; } MODES[] = 
   {"negotiate", mode_negotiate, 0}, {"wrap", mode_wrap, 0}, {"open", mode_open, 0},
   {"absent", mode_absent, 1}, /* explicit only: libuvc crashes on it (libuvc#85) */
   {"soak", mode_soak, 1},     /* explicit only: long */
+  {"stillbig", mode_stillbig, 1}, /* explicit only: libuvc cuts such stills (libuvc#256) */
 };
 
 static void usage(void) {
-  fprintf(stderr, "usage: api_test [-d VID:PID] [-n INDEX] [-m STATUS_WAIT_MS] [-l] [-x] MODE...\n  modes: info controls convert poll still multi status async negotiate wrap open absent soak all\n");
+  fprintf(stderr, "usage: api_test [-d VID:PID] [-n INDEX] [-m STATUS_WAIT_MS] [-l] [-x] MODE...\n  modes: info controls convert poll still multi status async negotiate wrap open absent soak stillbig all\n");
 }
 
 int main(int argc, char **argv) {
