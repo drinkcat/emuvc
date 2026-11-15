@@ -1,0 +1,9 @@
+# Synthetic camera whose VideoStreaming interface has no input header: formats and frames follow the
+# interface descriptor directly, so nothing names the streaming endpoint (libuvc#300 was a NULL
+# dereference around here).
+[[device]]
+model = "synthetic"
+
+[[device.patch]]
+target = { iface = "vs", subtype = 0x01 }   # VS_INPUT_HEADER
+remove = true

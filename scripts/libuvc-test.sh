@@ -217,7 +217,7 @@ done
 
 # Malformed descriptors (configs/desc-*.toml, emuvc_devices::patch) the host must cope with: all modes, strict.
 for c in desc-unknown-vs-subtype desc-color-before-frames desc-num-frames-over desc-duplicate-frame desc-vc-vendor-descriptor \
-         desc-bcduvc-010a desc-unknown-guid desc-still-compression; do
+         desc-bcduvc-010a desc-unknown-guid desc-still-compression desc-format-no-frames; do
   CHECK_RE='^RESULT mode=wrap ' run_api "api-$c" EMUVC_CONFIG="$CFG/$c.toml" $V -- -m 1500 all
 done
 
@@ -263,6 +263,9 @@ BUG="UVC cameras with vendor-specific interface classes (QuickCam 046d:08c1-08c7
 # libuvc lists the camera once and only ever uses its first function.
 BUG="libuvc uses a camera's first video function only: the Luxvisions IR function and the second camera of stereo devices (libuvc#170, #265, #241, #302) are out of reach" \
   CHECK_RE='devices=2 ' TEST_BIN=api_test run_case api-second-function bug $D $V -- open
+# A VC header that lists no streaming interface (libuvc#172, #195, #71): the camera must still open (its
+# controls work); see api-desc-vc-no-streaming/* below for the other modes.
+CHECK_RE='open=0 ' TEST_BIN=api_test run_case api-desc-vc-no-streaming pass EMUVC_CONFIG="$CFG/desc-vc-no-streaming.toml" $V -- open
 # libuvc skips 199e:8201-8208 (The Imaging Source) when listing devices.
 CHECK_RE='devices=0 ' run_api api-skip-199e-8201 EMUVC_CONFIG="$CFG/skip-199e-8201.toml" $V -- open
 # Valid descriptors libuvc rejects (uvcvideo takes both): the camera must open.
@@ -344,6 +347,11 @@ run_api_robust() { # NAME [VAR=val ...]
 # every probe/commit stalls; the device rejects the probe length its UVC version requires; the first
 # frames are truncated (libuvc hands them to the callback as they are)
 for c in issue-1-probe-stall issue-strict-probe-len issue-garbage-first-frames; do
+  run_api_robust "api-$c" EMUVC_CONFIG="$CFG/$c.toml" $V
+done
+# missing descriptors (libuvc#172, #195, #300, #71): no input header in the streaming interface, a VC
+# header that lists no streaming interface
+for c in desc-no-input-header desc-vc-no-streaming; do
   run_api_robust "api-$c" EMUVC_CONFIG="$CFG/$c.toml" $V
 done
 
