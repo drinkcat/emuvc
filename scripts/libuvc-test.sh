@@ -203,7 +203,7 @@ done
 # Misbehaving devices: -l counts failed expectations as soft; crashes and hangs still fail.
 for c in err-bit drop-truncate header-2 header-lie header-lie-scr header-len-0 header-len-1 mjpeg-no-eof-no-fid \
          probe-len-34-strict ignore-format iso-faults disconnect bogus-header bulk-faults probe-small-frame-size \
-         probe-bogus-frame; do
+         probe-bogus-frame probe-no-frame-size-h264; do
   CHECK_RE='^RESULT mode=negotiate ' run_api "api-fault-$c" EMUVC_CONFIG="$CFG/$c.toml" -- -l poll still status negotiate
 done
 

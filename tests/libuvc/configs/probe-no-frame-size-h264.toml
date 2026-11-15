@@ -1,0 +1,7 @@
+# A frame-based (H.264) camera whose probe reply leaves dwMaxVideoFrameSize at 0. Frame-based frame
+# descriptors have no dwMaxVideoFrameBufferSize to fall back on, so a host has no frame size at all
+# (uvcvideo ends up with 0 as well): a device bug, which the host must survive.
+[[device]]
+model = "synthetic"
+synthetic = { formats = ["h264"] }
+uvc = { probe_cur = { max_video_frame_size = 0 } }

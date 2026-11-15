@@ -329,7 +329,8 @@ static int typed_rc(int r, enum uvc_req_code rc, const char *call) {
 /* ---- spec rules for controls, derived from what the device reports (UVC 1.5 4.1.2, 4.2) ---- */
 #define VC_REQUEST_ERROR_CODE_CONTROL 0x02
 enum { INFO_GET = 1, INFO_SET = 2, INFO_DISABLED = 4, INFO_AUTOUPDATE = 8, INFO_ASYNC = 16 };
-enum { ERR_NOT_READY = 0x01, ERR_WRONG_STATE = 0x02, ERR_OUT_OF_RANGE = 0x04, ERR_INVALID_REQUEST = 0x07, ERR_INVALID_VALUE_WITHIN_RANGE = 0x08 };
+enum { ERR_NOT_READY = 0x01, ERR_WRONG_STATE = 0x02, ERR_OUT_OF_RANGE = 0x04, ERR_INVALID_UNIT = 0x05, ERR_INVALID_CONTROL = 0x06,
+       ERR_INVALID_REQUEST = 0x07, ERR_INVALID_VALUE_WITHIN_RANGE = 0x08 };
 
 /* bRequestErrorCode for the last request, or -1 when the device has no such control. */
 static int req_error(void) {
@@ -710,8 +711,17 @@ static void mode_controls(void) {
   }
   /* generic access on a unit that does not exist: must fail cleanly */
   { uint8_t b[4] = {0}; expect(uvc_get_ctrl(devh, 0xfe, 1, b, 4, UVC_GET_CUR) < 0, "control on non-existent unit fails");
+    int have_rec = req_error() >= 0; /* reading it clears nothing: the last request was the stalled one */
+    expect(uvc_get_ctrl(devh, 0xfe, 1, b, 4, UVC_GET_CUR) < 0, "control on non-existent unit fails again");
+    if (have_rec) expect(req_error() == ERR_INVALID_UNIT, "request error code after a non-existent unit: 0x05");
     expect(uvc_get_ctrl_len(devh, 0xfe, 1) < 0, "len on non-existent unit fails");
-    expect(uvc_set_ctrl(devh, 0xfe, 1, b, 4) < 0, "set on non-existent unit fails"); }
+    expect(uvc_set_ctrl(devh, 0xfe, 1, b, 4) < 0, "set on non-existent unit fails");
+    /* a selector the processing unit doesn't have (4.2.1.2: "Invalid Control") */
+    const uvc_processing_unit_t *pu0 = uvc_get_processing_units(devh);
+    if (have_rec && pu0) {
+      expect(uvc_get_ctrl(devh, pu0->bUnitID, 0x1f, b, 4, UVC_GET_CUR) < 0, "unknown PU selector fails");
+      expect(req_error() == ERR_INVALID_CONTROL, "request error code after an unknown selector: 0x06");
+    } }
   printf("  units: ct=%d pu=%d su=%d xu=%d (xu controls readable: %d)\n", have_ct, have_pu, have_su, nxu, xok);
   check_power_mode();
 }
