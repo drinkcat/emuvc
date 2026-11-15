@@ -205,6 +205,9 @@ pub struct StreamQuirks {
     pub drop_every: Option<u32>,
     /// Send only the first half of every Nth frame (then EOF).
     pub truncate_every: Option<u32>,
+    /// Append this many junk bytes to every video frame, before EOF: frames longer than
+    /// their format says (uvcvideo flags such uncompressed frames as erroneous).
+    pub frame_extra: u32,
     /// Restrict err/drop/truncate_every to the first N frames of each stream
     /// (e.g. cameras sending garbage while the sensor starts).
     pub only_first_frames: Option<u64>,
@@ -1026,6 +1029,10 @@ impl VsInterface {
         }
         if error_mid {
             tx.error_at = Some(tx.data.len() / 2);
+        }
+        if !tx.still && self.quirks.frame_extra > 0 {
+            let n = tx.data.len() + self.quirks.frame_extra as usize;
+            tx.data.resize(n, 0x5a);
         }
         let st = self.stream.as_mut().unwrap();
         if !self.quirks.no_fid_toggle {

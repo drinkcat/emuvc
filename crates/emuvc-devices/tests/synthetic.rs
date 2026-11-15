@@ -532,6 +532,29 @@ fn payload_framing_quirks() {
     );
 }
 
+/// `frame_extra`: every frame carries junk bytes past its size, before EOF.
+#[test]
+fn frame_extra_bytes() {
+    let p = bulk_payloads(
+        emuvc_uvc::stream::StreamQuirks {
+            frame_extra: 1000,
+            ..Default::default()
+        },
+        80,
+    );
+    let (mut bytes, mut frames) = (0, 0);
+    for p in &p {
+        bytes += p.len() - p[0] as usize;
+        if p[1] & HDR_EOF != 0 {
+            if frames > 0 {
+                assert_eq!(bytes, 640 * 480 * 2 + 1000, "frame {frames}");
+            }
+            (bytes, frames) = (0, frames + 1);
+        }
+    }
+    assert!(frames >= 3, "frames end");
+}
+
 /// The iSight packet format: a tagged header packet per frame, then data without headers.
 #[test]
 fn isight_packets() {

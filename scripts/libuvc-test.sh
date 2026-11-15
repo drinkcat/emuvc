@@ -175,6 +175,9 @@ BUG="EOF in a header-only payload is ignored (checked only when the payload has 
 # ERR on one payload in the middle of every 3rd frame: those frames may be dropped, not delivered with a hole.
 BUG="ERR on one payload: libuvc drops that payload only, and delivers the frame with a hole" \
   run_case err-payload bug EMUVC_CONFIG="$CFG/err-payload.toml" -- -f yuyv -s 640x480 -r 30 -n 30 -t 20 --allow-gaps
+# Frames longer than their size (libuvc#183, #184, #209): dropping them is allowed, bogus frames are not.
+BUG="frames longer than dwMaxVideoFrameSize: libuvc publishes the full buffer, then delivers the bytes past it, from the payloads after, as a frame of their own" \
+  run_case frame-overrun bug EMUVC_CONFIG="$CFG/frame-overrun.toml" -- -f yuyv -s 640x480 -r 30 -n 30 -t 20 --allow-gaps
 # The built-in iSight's packet format (a tagged header packet per frame, then headerless data).
 run_case isight pass EMUVC_CONFIG="$CFG/isight.toml" -- -f yuyv -s 640x480 -r 30 -n 30 -t 15
 # libuvc #270: SuperSpeed isochronous alternate settings carry bursts (wBytesPerInterval above 1024):
