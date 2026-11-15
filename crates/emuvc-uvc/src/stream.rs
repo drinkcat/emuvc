@@ -233,6 +233,10 @@ pub struct StreamQuirks {
     /// alone (Aveo 1871:0306, Ecamm 18cd:cafe; uvcvideo's UVC_QUIRK_PROBE_EXTRAFIELDS copies it
     /// from the device's last reply).
     pub strict_probe_fields: bool,
+    /// Bulk: only CLEAR_FEATURE(ENDPOINT_HALT) on the streaming endpoint stops the stream, the
+    /// way Windows and uvcvideo stop bulk streams; SET_INTERFACE leaves it running, and a commit
+    /// while it runs STALLs ("wrong state").
+    pub bulk_stop_clear_halt: bool,
     /// STALL every class request to the interface until the host has sent it a SET_INTERFACE
     /// (the XBox Live Vision camera misbehaves otherwise; uvcvideo's uvc_video_init sends one
     /// before anything else).
@@ -750,6 +754,13 @@ impl VsInterface {
             }
             (VS_PROBE_CONTROL | VS_COMMIT_CONTROL, GET_INFO) => Ok(vec![INFO_GET | INFO_SET]),
             (VS_COMMIT_CONTROL, SET_CUR) => {
+                if self.quirks.bulk_stop_clear_halt
+                    && self.stream.is_some()
+                    && matches!(self.desc.transfer, Transfer::Bulk { .. })
+                {
+                    info!("{}: commit while streaming (needs CLEAR_HALT)", self.name);
+                    return Err(ERR_WRONG_STATE);
+                }
                 let mut req = StreamingControl::from_bytes(data);
                 if self.quirks.zero_index_replies && req.format_index == 0 && req.frame_index == 0 {
                     req.format_index = self.probe.format_index;
@@ -878,6 +889,7 @@ impl VsInterface {
         self.alt = alt;
         self.set_interface_seen = true;
         match (&self.desc.transfer, alt) {
+            (Transfer::Bulk { .. }, 0) if self.quirks.bulk_stop_clear_halt => {}
             (_, 0) => self.stop(),
             (Transfer::Isochronous { .. }, _) => self.start(cx),
             (Transfer::Bulk { .. }, _) => {}

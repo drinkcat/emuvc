@@ -1,0 +1,7 @@
+# A bulk camera that stops streaming only on CLEAR_FEATURE(ENDPOINT_HALT) of its streaming endpoint,
+# the way Windows and uvcvideo stop bulk streams (libuvc#257): SET_INTERFACE leaves it streaming, and
+# it refuses a commit while it streams.
+[[device]]
+model = "synthetic"
+synthetic = { transfer = "bulk" }
+uvc = { bulk_stop_clear_halt = true }

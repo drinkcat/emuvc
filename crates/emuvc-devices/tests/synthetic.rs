@@ -602,6 +602,36 @@ fn soi_and_empty_frames() {
     );
 }
 
+/// `bulk_stop_clear_halt`: SET_INTERFACE 0 doesn't stop a bulk stream, a commit then STALLs,
+/// and CLEAR_FEATURE(ENDPOINT_HALT) stops it.
+#[test]
+fn bulk_stop_clear_halt() {
+    let mut cfg = synthetic(SyntheticConfig {
+        transfer: "bulk".into(),
+        ..Default::default()
+    });
+    cfg.uvc.bulk_stop_clear_halt = true;
+    let host = host();
+    let info = host.attach(build(&cfg).unwrap()).unwrap();
+    let view = ConfigView::parse(&info.configs[0]).unwrap();
+    let vs = &parse_function(&view, 0, info.speed).unwrap().streaming[0];
+    probe_commit(&host, info.id, vs.interface, 2, 1, 333_333, 48).unwrap();
+    let setup = |rt: u8, req: u8, val: u16, idx: u16| SetupPacket::new(rt, req, val, idx, 0);
+    // SET_INTERFACE alt 0: still streaming, so the next commit is refused.
+    host.control(
+        info.id,
+        setup(0x01, 0x0b, 0, vs.interface as u16),
+        &[],
+        None,
+    )
+    .unwrap();
+    assert!(probe_commit(&host, info.id, vs.interface, 2, 1, 333_333, 48).is_err());
+    // CLEAR_FEATURE(ENDPOINT_HALT) on the streaming endpoint stops it.
+    host.control(info.id, setup(0x02, 0x01, 0, vs.endpoint as u16), &[], None)
+        .unwrap();
+    assert!(probe_commit(&host, info.id, vs.interface, 2, 1, 333_333, 48).is_ok());
+}
+
 /// The iSight packet format: a tagged header packet per frame, then data without headers.
 #[test]
 fn isight_packets() {
