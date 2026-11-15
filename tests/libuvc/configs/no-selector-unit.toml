@@ -1,5 +1,0 @@
-# Synthetic camera without a selector unit, like most cameras: uvc_get_input_select() has nothing
-# to address (libuvc#85).
-[[device]]
-model = "synthetic"
-synthetic = { selector_unit = false }

@@ -1,0 +1,4 @@
+# Synthetic camera without still image capture (still method 0: no still descriptors, no trigger).
+[[device]]
+model = "synthetic"
+synthetic = { still = 0 }

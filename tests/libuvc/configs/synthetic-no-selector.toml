@@ -1,0 +1,5 @@
+# Synthetic camera without a selector unit, like most cameras (all modes, strict). It is also the
+# camera for api-absent-selector-unit: uvc_get_input_select() has nothing to address (libuvc#85).
+[[device]]
+model = "synthetic"
+synthetic = { selector_unit = false }

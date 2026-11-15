@@ -269,7 +269,7 @@ BUG="typed getters return a short reply's byte count, neither success nor an err
   CHECK_RE='^RESULT mode=controls ' TEST_BIN=api_test run_case api-short-control-reply bug EMUVC_CONFIG="$CFG/short-control-reply.toml" $V -- -l controls
 # The typed controls of a unit the camera lacks must fail, not dereference the missing unit.
 BUG="libuvc#85: uvc_get_input_select() dereferences uvc_get_selector_units(), NULL without a selector unit" BUG_CRASH=1 \
-  CHECK_RE='^RESULT mode=absent ' TEST_BIN=api_test run_case api-absent-selector-unit bug EMUVC_CONFIG="$CFG/no-selector-unit.toml" $V -- absent
+  CHECK_RE='^RESULT mode=absent ' TEST_BIN=api_test run_case api-absent-selector-unit bug EMUVC_CONFIG="$CFG/synthetic-no-selector.toml" $V -- absent
 BUG="libuvc#85: processing unit controls dereference uvc_get_processing_units(), NULL without one" BUG_CRASH=1 \
   CHECK_RE='^RESULT mode=absent ' TEST_BIN=api_test run_case api-absent-processing-unit bug EMUVC_CONFIG="$CFG/desc-no-processing-unit.toml" $V -- absent
 
