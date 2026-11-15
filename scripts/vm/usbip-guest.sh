@@ -208,6 +208,31 @@ unserve
 # Unplugged mid-stream (unplug.toml): the server closes the connection, as usbip-host does when its device
 # goes away, and vhci-hcd reports the disconnect. Neither uvcvideo's client nor libuvc through the real
 # libusb may hang then (libuvc#152, #53: stop and close after an unplug).
+# Two streaming interfaces of one camera at once (synthetic-uvc11-2streams.toml): uvcvideo makes a capture
+# node of each, and both must deliver intact frames while the other streams.
+step "uvcvideo: two streams at once"
+serve synthetic-uvc11-2streams Synthetic
+cap1= cap2=
+for n in $(ls /sys/class/video4linux | sort -V); do
+  echo "$before" | grep -qx "$n" && continue
+  v4l2-ctl -d "/dev/$n" -D 2>/dev/null | sed -n '/Device Caps/,$p' | grep -q "Video Capture" || continue
+  if [ -z "$cap1" ]; then cap1=/dev/$n; elif [ -z "$cap2" ]; then cap2=/dev/$n; fi
+done
+check test -n "$cap2"
+if [ -n "$cap2" ]; then
+  timeout 30 v4l2-ctl -d "$cap2" --set-fmt-video=width=640,height=480,pixelformat=YUYV --stream-mmap=4 \
+    --stream-count=60 --stream-to=/tmp/stream2.yuyv >/dev/null 2>&1 &
+  second=$!
+  check timeout 30 v4l2-ctl -d "$cap1" --set-fmt-video=width=640,height=480,pixelformat=YUYV --stream-mmap=4 \
+    --stream-count=60 --stream-to=/tmp/stream1.yuyv
+  check wait "$second"
+  check "$EMUVC" check-frames -f yuyv -s 640x480 /tmp/stream1.yuyv
+  check "$EMUVC" check-frames -f yuyv -s 640x480 /tmp/stream2.yuyv
+  check stats_ok "$cap1"
+fi
+grep -E "start streaming|stop streaming" /tmp/usbip-synthetic-uvc11-2streams.log | tail -n 4
+unserve
+
 disconnects() { dmesg | grep -c "USB disconnect"; }
 step "uvcvideo: unplugged while streaming"
 unplugs=$(disconnects)

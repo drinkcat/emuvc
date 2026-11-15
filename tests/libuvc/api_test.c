@@ -1219,15 +1219,16 @@ static void mode_multi(void) {
     }
     if (nh == 8) break;
   }
-  int total = 0;
+  int total = 0, got[8] = {0};
   for (int round = 0; round < 3; round++)
     for (int i = 0; i < nh; i++) {
       uvc_frame_t *fp = NULL;
       uvc_error_t e = uvc_stream_get_frame(hs[i], &fp, 3000000);
-      soft(e); if (e == UVC_SUCCESS && fp) total++;
+      soft(e); if (e == UVC_SUCCESS && fp) { total++; got[i]++; }
     }
   printf("  streams running: %d, frames: %d\n", nh, total);
-  expect(nh < 2 || total >= nh, "every running stream delivers frames (%d streams, %d frames)", nh, total);
+  for (int i = 0; i < nh; i++)
+    expect(got[i] > 0, "stream %d of %d delivers frames while the others run (%d)", i, nh, got[i]);
   for (int i = 0; i < nh; i++) { uvc_stream_stop(hs[i]); uvc_stream_close(hs[i]); }
 }
 
