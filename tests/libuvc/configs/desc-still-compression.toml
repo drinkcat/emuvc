@@ -1,0 +1,13 @@
+# Synthetic camera whose MJPEG still image frame descriptor lists two compression patterns
+# (bNumCompressionPattern 2, UVC 1.5 table 3-18), which the synthetic camera never does.
+[[device]]
+model = "synthetic"
+
+[[device.patch]]                           # the still frame descriptor again, plus 2 patterns
+target = { iface = "vs", subtype = 0x03 }
+insert_before = [0x14, 0x24, 0x03, 0x00, 0x03, 0x80, 0x02, 0xe0, 0x01, 0x40, 0x01, 0xf0, 0x00,
+                 0xa0, 0x00, 0x78, 0x00, 0x02, 0x05, 0x0a]
+
+[[device.patch]]                           # ... replacing the original, now the second one
+target = { iface = "vs", subtype = 0x03, nth = 1 }
+remove = true

@@ -16,8 +16,13 @@
 //! insert_before = [5, 0x24, 0x20, 0, 0]
 //! ```
 //!
+//! `truncate = N` cuts the target to its first N bytes (and sets bLength = N): a descriptor
+//! shorter than its type requires, which `set = [[0, N]]` alone can't make, since the bytes
+//! left behind would no longer parse as descriptors.
+//!
 //! Operations run in this order:
-//! 1. structural changes (`insert_before`, `duplicate`, `move_before`, `remove`), patch by patch;
+//! 1. structural changes (`insert_before`, `duplicate`, `move_before`, `remove`, `truncate`),
+//!    patch by patch;
 //! 2. `wTotalLength` fix-ups (configuration, VC header, VS input/output headers) by the bytes
 //!    added or removed, which keeps lengths that were already wrong just as wrong;
 //! 3. `set` byte edits, so a patch can still break a length on purpose.
@@ -65,6 +70,8 @@ pub struct DescriptorPatch {
     /// Moves the target before another descriptor.
     pub move_before: Option<Target>,
     pub remove: bool,
+    /// Cuts the target to this many bytes, bLength included (at least 2).
+    pub truncate: Option<usize>,
 }
 
 /// One descriptor of a configuration, with the video interface it belongs to.
@@ -175,6 +182,17 @@ pub fn apply(config: &mut Vec<u8>, patches: &[DescriptorPatch]) -> Result<(), St
         if p.remove {
             descs.remove(i);
             continue;
+        }
+        if let Some(n) = p.truncate {
+            let d = &mut descs[i];
+            if n < 2 || n > d.bytes.len() {
+                return Err(format!(
+                    "patch {t:?}: can't truncate {} bytes to {n}",
+                    d.bytes.len()
+                ));
+            }
+            d.bytes.truncate(n);
+            d.bytes[0] = n as u8;
         }
         if let Some(&(off, _)) = p.set.iter().find(|(off, _)| *off >= descs[i].bytes.len()) {
             return Err(format!("patch {t:?}: offset {off} past the descriptor"));
@@ -312,6 +330,20 @@ mod tests {
         assert_eq!(c[VS_TOTAL - 5], 20 + 5 + 5);
         assert_eq!(c.len(), sample().len() + 5);
         assert_eq!(total(&c), c.len());
+    }
+
+    #[test]
+    fn truncate_shortens_and_fixes_lengths() {
+        let c = patch("[[patch]]\ntarget = { iface = \"vs\", subtype = 6 }\ntruncate = 3");
+        assert_eq!(&c[VS_TOTAL + 2..VS_TOTAL + 5], &[3, CS_INTERFACE, 6]);
+        assert_eq!(vs_subtypes(&c), [1, 6, 7, 7]);
+        assert_eq!(c[VS_TOTAL], 20 - 1);
+        assert_eq!(c.len(), sample().len() - 1);
+        assert_eq!(total(&c), c.len());
+        let mut c = sample();
+        let p: DescriptorPatch =
+            toml::from_str("target = { iface = \"vs\", subtype = 6 }\ntruncate = 9").unwrap();
+        assert!(apply(&mut c, &[p]).is_err());
     }
 
     #[test]
