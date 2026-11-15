@@ -1429,6 +1429,35 @@ static void mode_open(void) {
   printf("RESULT_EXTRA devices=%d find=%d open=%d (%s)\n", n, fe, oe, uvc_strerror(oe));
 }
 
+/* ================= soak ================= */
+/* Open, stream, stop and close, round after round in one context (libuvc#261, #227, #260, #293):
+ * every round must work, and ASan reports what a round leaks. Not part of `all`. The watchdog is
+ * per round: a round that hangs fails, a slow (instrumented) build doesn't. */
+static void mode_soak(void) {
+  const int rounds = 20;
+  int ok = 0;
+  for (int r = 0; r < rounds; r++) {
+    alarm(10);
+    if (open_device()) { expect(0, "open (round %d)", r); break; }
+    const uvc_format_desc_t *f = uvc_get_format_descs(devh);
+    const uvc_frame_desc_t *fr = f ? smallest_frame(f) : NULL;
+    uvc_stream_ctrl_t c;
+    if (fr && ctrl_for(f, fr, default_interval(fr), &c) == UVC_SUCCESS) {
+      cb_frames = 0;
+      if (uvc_start_streaming(devh, &c, count_cb, NULL, 0) == UVC_SUCCESS) {
+        for (int i = 0; i < 200 && cb_frames < 1; i++) usleep(5000);
+        uvc_stop_streaming(devh);
+        if (cb_frames >= 1) ok++;
+      }
+    }
+    uvc_close(devh); devh = NULL;
+    uvc_unref_device(dev); dev = NULL;
+  }
+  alarm(45);
+  printf("  rounds with frames: %d of %d\n", ok, rounds);
+  expect(ok == rounds, "every round streams (%d of %d)", ok, rounds);
+}
+
 /* ================= absent ================= */
 /* The typed controls of a unit the device doesn't have must fail, not dereference the missing unit
  * (libuvc#85). Not part of `all`: libuvc crashes on it. */
@@ -1497,10 +1526,11 @@ static const struct { const char *name; mode_fn fn; int not_in_all; } MODES[] = 
   {"still", mode_still, 0}, {"multi", mode_multi, 0}, {"status", mode_status, 0}, {"async", mode_async, 0},
   {"negotiate", mode_negotiate, 0}, {"wrap", mode_wrap, 0}, {"open", mode_open, 0},
   {"absent", mode_absent, 1}, /* explicit only: libuvc crashes on it (libuvc#85) */
+  {"soak", mode_soak, 1},     /* explicit only: long */
 };
 
 static void usage(void) {
-  fprintf(stderr, "usage: api_test [-d VID:PID] [-n INDEX] [-m STATUS_WAIT_MS] [-l] [-x] MODE...\n  modes: info controls convert poll still multi status async negotiate wrap open absent all\n");
+  fprintf(stderr, "usage: api_test [-d VID:PID] [-n INDEX] [-m STATUS_WAIT_MS] [-l] [-x] MODE...\n  modes: info controls convert poll still multi status async negotiate wrap open absent soak all\n");
 }
 
 int main(int argc, char **argv) {

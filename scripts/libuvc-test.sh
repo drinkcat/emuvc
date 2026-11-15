@@ -331,6 +331,16 @@ for c in issue-1-probe-stall issue-strict-probe-len issue-garbage-first-frames; 
   run_api_robust "api-$c" EMUVC_CONFIG="$CFG/$c.toml" $V
 done
 
+# Unplugged mid-operation (libuvc#152, #53, #16, #146): during a control SET_CUR, and when libuvc selects
+# alt 0 to release a streaming interface at close. libuvc may fail, but cleanly (and without leaks under ASan).
+CHECK_RE='^RESULT mode=controls ' TEST_BIN=api_test run_case api-disconnect-on-set robust EMUVC_CONFIG="$CFG/disconnect-on-set.toml" $V -- -l controls
+CHECK_RE='^RESULT mode=poll ' TEST_BIN=api_test run_case api-disconnect-on-close robust EMUVC_CONFIG="$CFG/disconnect-on-close.toml" -- -l poll
+# Open, stream, stop and close, 20 rounds in one context. libuvc stops its event thread when the last
+# device closes, and never resets kill_handler_thread: after a reopen the new event thread exits at once,
+# the streams get no data and uvc_stop_streaming() waits forever. The hang is the bug (BUG_CRASH).
+BUG="libuvc#227, #261: uvc_close() of the last device sets kill_handler_thread and nothing resets it, so after a reopen no events are handled: streams get no data, uvc_stop_streaming() hangs" BUG_CRASH=1 \
+  CHECK_RE='^RESULT mode=soak ' TEST_BIN=api_test run_case api-soak bug EMUVC_CONFIG="$CFG/synthetic-default.toml" $V -- soak
+
 # Known libuvc bugs (bug): the expected behaviour, XFAIL until libuvc is fixed.
 run_api_bug() { # NAME [VAR=val ...]: all modes, strict
   local name=$1; shift
@@ -360,7 +370,7 @@ for f in get_config_descriptor=io get_active_config_descriptor=io open=access \
          get_device_list=io release_interface=not_found release_interface=io \
          detach_kernel_driver=not_found detach_kernel_driver=not_supported \
          control_transfer=pipe@5 control_transfer=pipe@20-60 control_transfer=io@3 \
-         get_string_descriptor_ascii=io init_context=no_mem set_configuration=io wrap_sys_device=io; do
+         get_string_descriptor_ascii=io init_context=no_mem set_configuration=io wrap_sys_device=io open=no_device; do
   m=all; [[ $f == *:* ]] && m=${f##*:} && f=${f%:*}
   CHECK_RE='^RESULT mode=' run_api "api-shimfail-${f//[^a-z_0-9=-]/_}" $D $V "EMUVC_LIBUSB_FAIL=$f" -- -l "$m"
 done
