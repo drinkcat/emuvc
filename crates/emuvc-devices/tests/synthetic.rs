@@ -532,6 +532,35 @@ fn payload_framing_quirks() {
     );
 }
 
+/// The iSight packet format: a tagged header packet per frame, then data without headers.
+#[test]
+fn isight_packets() {
+    const TAG: [u8; 12] = [
+        0x11, 0x22, 0x33, 0x44, 0xde, 0xad, 0xbe, 0xef, 0xde, 0xad, 0xfa, 0xce,
+    ];
+    let p = bulk_payloads(
+        emuvc_uvc::stream::StreamQuirks {
+            isight: true,
+            ..Default::default()
+        },
+        120,
+    );
+    let headers: Vec<usize> = (0..p.len())
+        .filter(|&i| p[i].len() == 30 && p[i][2..14] == TAG)
+        .collect();
+    assert!(headers.len() >= 3, "a header packet per frame");
+    assert_eq!(headers[0], 0, "the stream starts with a header");
+    for w in headers.windows(2) {
+        let data: usize = p[w[0] + 1..w[1]].iter().map(Vec::len).sum();
+        assert_eq!(
+            data,
+            640 * 480 * 2,
+            "a whole YUYV frame of data between headers"
+        );
+        assert_ne!(p[w[0]][1] & HDR_FID, p[w[1]][1] & HDR_FID, "FID toggles");
+    }
+}
+
 /// Probe quirks: class requests stall until a SET_INTERFACE (XBox Live Vision); SET_CUR(PROBE)
 /// stalls with dwMaxVideoFrameSize 0 (UVC_QUIRK_PROBE_EXTRAFIELDS).
 #[test]

@@ -175,6 +175,8 @@ BUG="EOF in a header-only payload is ignored (checked only when the payload has 
 # ERR on one payload in the middle of every 3rd frame: those frames may be dropped, not delivered with a hole.
 BUG="ERR on one payload: libuvc drops that payload only, and delivers the frame with a hole" \
   run_case err-payload bug EMUVC_CONFIG="$CFG/err-payload.toml" -- -f yuyv -s 640x480 -r 30 -n 30 -t 20 --allow-gaps
+# The built-in iSight's packet format (a tagged header packet per frame, then headerless data).
+run_case isight pass EMUVC_CONFIG="$CFG/isight.toml" -- -f yuyv -s 640x480 -r 30 -n 30 -t 15
 # libuvc #270: SuperSpeed isochronous alternate settings carry bursts (wBytesPerInterval above 1024):
 # libuvc must size them from the endpoint companion descriptor and pick the 4096-byte one.
 CHECK_RE='start streaming .* 4096 bytes/payload' run_case ss-burst pass EMUVC_CONFIG="$CFG/synthetic-iso-ss.toml" -- -f yuyv -s 640x480 -r 30 -n 30 -t 15
@@ -196,7 +198,7 @@ CHECK_RE='^RESULT mode=poll ' run_api api-poll-no-eof EMUVC_CONFIG="$CFG/no-eof.
 CHECK_RE='^RESULT mode=convert ' run_api api-convert-no-dht EMUVC_CONFIG="$CFG/no-dht.toml" -- convert
 
 # Quirky-but-working devices: the API must behave as on the default device (strict).
-for c in header-6 header-long header-255 eof-payload probe-extra-fields idle-zlp probe-len-26 probe-no-frame-size startup-delay no-fid-toggle pts-first-only \
+for c in header-6 header-long header-255 eof-payload probe-extra-fields isight idle-zlp probe-len-26 probe-no-frame-size startup-delay no-fid-toggle pts-first-only \
          clock-wrap-jitter; do
   CHECK_RE='^RESULT mode=poll ' run_api "api-poll-$c" EMUVC_CONFIG="$CFG/$c.toml" -- poll negotiate
 done

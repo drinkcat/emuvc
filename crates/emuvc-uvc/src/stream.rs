@@ -197,6 +197,10 @@ pub struct StreamQuirks {
     /// Send EOF in a header-only payload after each frame's last data payload,
     /// rather than on it (uvcvideo: "EOF in empty payload").
     pub eof_payload: bool,
+    /// The built-in iSight's packet format (05ac:8501, uvc_isight.c): a single header
+    /// packet per frame, tagged 11223344 deadbeefdeadface, carries no data; the frame's
+    /// data follows in packets without any header, and idle packets are empty.
+    pub isight: bool,
     /// Silently skip every Nth frame.
     pub drop_every: Option<u32>,
     /// Send only the first half of every Nth frame (then EOF).
@@ -310,6 +314,8 @@ struct FrameTx {
     /// Byte offset whose payload gets the ERR bit (`err_payload`).
     error_at: Option<usize>,
     still: bool,
+    /// `isight`: the frame's header packet has been sent.
+    isight_header: bool,
 }
 
 struct Stream {
@@ -825,6 +831,7 @@ impl VsInterface {
             error: false,
             error_at: None,
             still: true,
+            isight_header: false,
         })
     }
 
@@ -1010,6 +1017,7 @@ impl VsInterface {
                 error,
                 error_at: None,
                 still: false,
+                isight_header: false,
             });
         }
         let mut tx = tx.unwrap();
@@ -1100,6 +1108,9 @@ impl VsInterface {
     /// Builds the next payload of at most `cap` bytes. `None`: nothing to send.
     fn payload(&mut self, now: BusTime, cap: usize) -> Option<Vec<u8>> {
         self.pick_frame(now * UFRAME_NS);
+        if self.quirks.isight {
+            return self.isight_payload(cap);
+        }
         let hlen = self.header_bytes();
         if cap < hlen {
             // The host's packet can't even hold a header.
@@ -1139,6 +1150,48 @@ impl VsInterface {
         Some(out)
     }
 
+    /// iSight: the frame's header packet, then data-only packets. `None` between frames.
+    fn isight_payload(&mut self, cap: usize) -> Option<Vec<u8>> {
+        const TAG: [u8; 12] = [
+            0x11, 0x22, 0x33, 0x44, 0xde, 0xad, 0xbe, 0xef, 0xde, 0xad, 0xfa, 0xce,
+        ];
+        let mut st = self.stream.take()?;
+        let fid = st.fid;
+        let out = match st.cur.as_mut() {
+            None => None,
+            Some(f) if !f.isight_header => {
+                f.isight_header = true;
+                let mut info = HDR_EOH | if fid { HDR_FID } else { 0 };
+                if f.error {
+                    info |= HDR_ERR;
+                }
+                if f.still {
+                    info |= HDR_STI;
+                }
+                let mut h = vec![30, info];
+                h.extend_from_slice(&TAG);
+                h.resize(30, 0);
+                Some(h)
+            }
+            Some(f) => {
+                let (data, eof) = Self::chunk(f, cap);
+                let data = data.to_vec();
+                if eof {
+                    let f = st.cur.take().unwrap();
+                    if f.still {
+                        self.stats.stills_sent += 1;
+                    } else {
+                        self.stats.frames_sent += 1;
+                    }
+                }
+                Some(data)
+            }
+        };
+        self.stats.payloads += out.is_some() as u64;
+        self.stream = Some(st);
+        out
+    }
+
     /// One isochronous service interval.
     pub fn iso_in(&mut self, cx: &mut Ctx, max_len: usize) -> Vec<u8> {
         let Some(st) = &self.stream else {
@@ -1147,7 +1200,7 @@ impl VsInterface {
         let cap = max_len.min(st.payload_size);
         self.pick_frame(cx.now_ns());
         let idle = self.stream.as_ref().is_some_and(|s| s.cur.is_none());
-        if idle && self.quirks.idle == IdlePayload::Zlp {
+        if idle && (self.quirks.idle == IdlePayload::Zlp || self.quirks.isight) {
             return Vec::new();
         }
         self.payload(cx.now(), cap).unwrap_or_default()
