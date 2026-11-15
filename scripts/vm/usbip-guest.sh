@@ -127,12 +127,24 @@ serve() {
   check test -n "$dev"
 }
 unserve() { kill "$srv" 2>/dev/null; wait "$srv" 2>/dev/null; sleep 0.5; }
+# stats_ok DEV: uvcvideo found no invalid payload header in the last stream of DEV's camera (the debugfs
+# statistics of its streaming interfaces; prints those of the interfaces that streamed).
+stats_ok() {
+  usb=$(dirname "$(readlink -f "/sys/class/video4linux/${1#/dev/}/device")")
+  set -- /sys/kernel/debug/usb/uvcvideo/"$(cat "$usb/busnum")-$(cat "$usb/devnum")"-*/stats
+  [ -r "$1" ] || return 2
+  for f; do
+    grep -q '^frames: *0$' "$f" || echo "  $(grep -E '^(frames|packets|empty|errors|invalid):' "$f" | tr -s ' \n' ' ')"
+  done
+  ! grep -q '^invalid: *[1-9]' "$@"
+}
 # yuyv CONFIG PATTERN: 30 YUYV 640x480 frames through uvcvideo, stamps checked (gaps are allowed).
 yuyv() {
   step "uvcvideo: $1"
   serve "$1" "$2"
   [ -n "$dev" ] && check timeout 30 v4l2-ctl -d "$dev" --set-fmt-video=width=640,height=480,pixelformat=YUYV \
-    --stream-mmap=4 --stream-count=30 --stream-to=/tmp/$1.yuyv && check "$EMUVC" check-frames -f yuyv -s 640x480 /tmp/$1.yuyv
+    --stream-mmap=4 --stream-count=30 --stream-to=/tmp/$1.yuyv && check "$EMUVC" check-frames -f yuyv -s 640x480 /tmp/$1.yuyv &&
+    check stats_ok "$dev"
   dmesg | grep -i "uvcvideo" | tail -n 2
   unserve
 }
@@ -174,7 +186,7 @@ serve bulk-stop-clear-halt Synthetic
 for round in 1 2; do
   [ -n "$dev" ] && check timeout 30 v4l2-ctl -d "$dev" --set-fmt-video=width=640,height=480,pixelformat=YUYV \
     --stream-mmap=4 --stream-count=10 --stream-to=/tmp/bulk$round.yuyv &&
-    check "$EMUVC" check-frames -f yuyv -s 640x480 /tmp/bulk$round.yuyv
+    check "$EMUVC" check-frames -f yuyv -s 640x480 /tmp/bulk$round.yuyv && check stats_ok "$dev"
 done
 grep -E "commit|streaming" /tmp/usbip-bulk-stop-clear-halt.log | tail -n 6
 unserve
