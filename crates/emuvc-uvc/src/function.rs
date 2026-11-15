@@ -689,15 +689,13 @@ impl Function for UvcFunction {
     }
 
     fn data_in(&mut self, cx: &mut Ctx, ep: u8, max_len: usize) -> InReply {
-        if self
-            .vc
-            .status_endpoint
-            .as_ref()
-            .is_some_and(|s| s.address == ep)
-        {
+        if let Some(se) = self.vc.status_endpoint.as_ref().filter(|s| s.address == ep) {
+            // A packet is at most wMaxPacketSize; a host buffer smaller than that overflows
+            // (babble), as on a real bus.
+            let mps = se.max_packet.max(1);
             return match self.status.pop_front() {
                 Some(mut p) => {
-                    p.truncate(max_len);
+                    p.truncate(mps);
                     InReply::Data(p)
                 }
                 None => InReply::Nak,

@@ -64,6 +64,8 @@ pub struct SyntheticConfig {
     /// The VideoControl interrupt endpoint. Without it, no control is autoupdate or
     /// asynchronous and there is no hardware trigger (UVC 1.5 2.4.2.2).
     pub status_endpoint: bool,
+    /// wMaxPacketSize of the status endpoint (16 by default).
+    pub status_packet_size: u16,
     pub selector_unit: bool,
     pub encoding_unit: bool,
     pub extension_units: u8,
@@ -93,6 +95,7 @@ impl Default for SyntheticConfig {
             still: 2,
             trigger: true,
             status_endpoint: true,
+            status_packet_size: 16,
             selector_unit: true,
             // libuvc rejects devices with encoding units (unknown VC subtype).
             encoding_unit: false,
@@ -358,7 +361,7 @@ pub fn descriptors(cfg: &SyntheticConfig) -> Result<Descriptors, String> {
         cfgb.endpoint(&EndpointDescriptor {
             address: STATUS_EP,
             attributes: 3,
-            max_packet_size: 16,
+            max_packet_size: cfg.status_packet_size.max(8),
             interval: if ss || cfg.speed == Speed::High {
                 8
             } else {
@@ -366,9 +369,9 @@ pub fn descriptors(cfg: &SyntheticConfig) -> Result<Descriptors, String> {
             },
         });
         if ss {
-            cfgb.ss_companion(&ss_companion(0, 0, 16));
+            cfgb.ss_companion(&ss_companion(0, 0, cfg.status_packet_size.max(8)));
         }
-        cfgb.raw(&vc_interrupt_endpoint(16));
+        cfgb.raw(&vc_interrupt_endpoint(cfg.status_packet_size.max(8)));
     }
 
     // --- VideoStreaming ---

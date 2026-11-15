@@ -316,6 +316,9 @@ fi
 # Interrupt transfers that time out: the host keeps polling and the events that follow arrive.
 CHECK_RE='button_events=2 value=1 ' run_api api-status-timeout EMUVC_CONFIG="$CFG/status-timeout.toml" -- -m 1000 status
 
+# A status packet longer than libuvc's status buffer overflows; the events that follow still arrive.
+CHECK_RE='button_events=2 ' run_api api-status-overflow EMUVC_CONFIG="$CFG/status-overflow.toml" -- -m 1000 status
+
 # Reshaped extension unit controls ([[device.control]]): libuvc sees the configured size and GET_INFO.
 CHECK_RE='XU 5/1 len=33 info=0x01' run_api api-xu-config EMUVC_CONFIG="$CFG/synthetic-xu.toml" -- controls
 # The power mode control through libuvc's own API, on a device that checks the value. libuvc's enum
