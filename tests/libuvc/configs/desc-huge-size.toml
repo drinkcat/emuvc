@@ -1,0 +1,14 @@
+# Synthetic camera whose YUYV frame descriptors all say 65535x65535 (the device streams 640x480,
+# 320x240, 160x120): width x height x bytes per pixel overflows 32 bits.
+[[device]]
+model = "synthetic"
+
+[[device.patch]]
+target = { iface = "vs", subtype = 0x05, nth = 0 }
+set = [[5, 0xff], [6, 0xff], [7, 0xff], [8, 0xff]]   # wWidth, wHeight
+[[device.patch]]
+target = { iface = "vs", subtype = 0x05, nth = 1 }
+set = [[5, 0xff], [6, 0xff], [7, 0xff], [8, 0xff]]
+[[device.patch]]
+target = { iface = "vs", subtype = 0x05, nth = 2 }
+set = [[5, 0xff], [6, 0xff], [7, 0xff], [8, 0xff]]

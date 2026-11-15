@@ -728,7 +728,7 @@ static void mode_controls(void) {
 
 /* ================= convert ================= */
 static void expect_frame(uvc_frame_t *o, enum uvc_frame_format ff, uint32_t w, uint32_t h, size_t bytes, const char *what) {
-  expect(o->frame_format == ff && o->width == w && o->height == h && o->data_bytes == bytes && o->step == bytes / h,
+  expect(o->frame_format == ff && o->width == w && o->height == h && o->data_bytes == bytes && (!h || o->step == bytes / h),
          "%s: format=%d %ux%u bytes=%zu step=%zu (want %d %ux%u %zu)", what, o->frame_format, o->width, o->height, o->data_bytes, o->step, ff, w, h, bytes);
 }
 

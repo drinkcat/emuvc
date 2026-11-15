@@ -1,0 +1,7 @@
+# Synthetic camera whose YUYV format says 0 bits per pixel.
+[[device]]
+model = "synthetic"
+
+[[device.patch]]
+target = { iface = "vs", subtype = 0x04 }   # first VS_FORMAT_UNCOMPRESSED
+set = [[21, 0]]                             # bBitsPerPixel

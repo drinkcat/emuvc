@@ -1,0 +1,11 @@
+# Synthetic camera whose first MJPEG frame has continuous intervals with dwMinFrameInterval
+# (2000000, 5 fps) above dwMaxFrameInterval (333333, 30 fps).
+[[device]]
+model = "synthetic"
+
+[[device.patch]]
+target = { iface = "vs", subtype = 0x07 }   # first VS_FRAME_MJPEG
+set = [[25, 0],                             # bFrameIntervalType: continuous
+       [26, 0x80], [27, 0x84], [28, 0x1e], [29, 0x00],  # dwMinFrameInterval 2000000
+       [30, 0x15], [31, 0x16], [32, 0x05], [33, 0x00],  # dwMaxFrameInterval 333333
+       [34, 0x01], [35, 0x00], [36, 0x00], [37, 0x00]]  # dwFrameIntervalStep 1

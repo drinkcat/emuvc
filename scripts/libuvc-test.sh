@@ -361,6 +361,22 @@ done
 for c in desc-no-input-header desc-vc-no-streaming; do
   run_api_robust "api-$c" EMUVC_CONFIG="$CFG/$c.toml" $V
 done
+# descriptor values at the edges: continuous intervals with min above max, 0 bits per pixel,
+# 65535x65535 frames (sizes overflow 32 bits), a 0x0 frame
+for c in desc-interval-range-inverted desc-zero-bpp desc-huge-size; do
+  run_api_robust "api-$c" EMUVC_CONFIG="$CFG/$c.toml" $V
+done
+# Converting the 0x0 frame leaks under ASan: uvc_ensure_frame_size() asks realloc() for 0 bytes, which
+# allocates, and uvc_free_frame() frees the data only when data_bytes > 0. The leak is the bug (lenient,
+# so the case passes once it's fixed).
+for m in $API_MODES; do
+  if [ "$m" = convert ] && [ -n "${LIBUVC_PRELOAD:-}" ]; then
+    BUG="uvc_free_frame() frees the data only when data_bytes > 0: a frame resized to 0 bytes (realloc of 0 allocates) leaks" BUG_CRASH=1 \
+      CHECK_RE="^RESULT mode=$m " TEST_BIN=api_test run_case "api-desc-zero-size/$m" bug EMUVC_CONFIG="$CFG/desc-zero-size.toml" $V -- -l "$m"
+  else
+    CHECK_RE="^RESULT mode=$m " TEST_BIN=api_test run_case "api-desc-zero-size/$m" robust EMUVC_CONFIG="$CFG/desc-zero-size.toml" $V -- "$m"
+  fi
+done
 
 # Unplugged mid-operation (libuvc#152, #53, #16, #146): during a control SET_CUR, and when libuvc selects
 # alt 0 to release a streaming interface at close. libuvc may fail, but cleanly (and without leaks under ASan).

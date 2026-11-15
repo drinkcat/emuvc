@@ -1,0 +1,7 @@
+# Synthetic camera whose first YUYV frame descriptor says 0x0 (the device streams 640x480).
+[[device]]
+model = "synthetic"
+
+[[device.patch]]
+target = { iface = "vs", subtype = 0x05 }   # first VS_FRAME_UNCOMPRESSED
+set = [[5, 0], [6, 0], [7, 0], [8, 0]]      # wWidth, wHeight
