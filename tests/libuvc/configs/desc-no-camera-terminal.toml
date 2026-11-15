@@ -1,0 +1,8 @@
+# The synthetic camera's input terminal described as a composite video connector (wTerminalType 0x0401),
+# as on capture devices: no camera terminal, so the typed camera terminal controls must fail.
+[[device]]
+model = "synthetic"
+
+[[device.patch]]
+target = { iface = "vc", subtype = 0x02 }  # the camera terminal (VC_INPUT_TERMINAL)
+set = [[4, 0x01], [5, 0x04]]               # wTerminalType = COMPOSITE_CONNECTOR

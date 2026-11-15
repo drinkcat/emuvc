@@ -229,7 +229,7 @@ done
 
 # Malformed descriptors (configs/desc-*.toml, emuvc_devices::patch) the host must cope with: all modes, strict.
 for c in desc-unknown-vs-subtype desc-color-before-frames desc-num-frames-over desc-duplicate-frame desc-vc-vendor-descriptor \
-         desc-bcduvc-010a desc-unknown-guid desc-still-compression desc-format-no-frames; do
+         desc-bcduvc-010a desc-unknown-guid desc-still-compression desc-format-no-frames desc-no-camera-terminal; do
   CHECK_RE='^RESULT mode=wrap ' run_api "api-$c" EMUVC_CONFIG="$CFG/$c.toml" $V -- -m 1500 all
 done
 
@@ -303,6 +303,9 @@ CHECK_RE='^RESULT mode=controls ' TEST_BIN=api_test run_case api-short-control-r
 # missing unit (libuvc#85).
 CHECK_RE='^RESULT mode=absent ' TEST_BIN=api_test run_case api-absent-selector-unit pass EMUVC_CONFIG="$CFG/synthetic-no-selector.toml" $V -- absent
 CHECK_RE='^RESULT mode=absent ' TEST_BIN=api_test run_case api-absent-processing-unit pass EMUVC_CONFIG="$CFG/desc-no-processing-unit.toml" $V -- absent
+CHECK_RE='^RESULT mode=absent ' TEST_BIN=api_test run_case api-absent-camera-terminal pass EMUVC_CONFIG="$CFG/desc-no-camera-terminal.toml" $V -- absent
+# Every VideoControl GET replies with no data: every typed control must fail (-s), the rest is lenient.
+CHECK_RE='^RESULT mode=controls ' TEST_BIN=api_test run_case api-short-control-replies pass EMUVC_CONFIG="$CFG/short-control-replies.toml" $V -- -l -s controls
 
 # Frame intervals: a 0 among the discrete intervals, which libuvc maps to 1 since libuvc#367 (the 0 ended
 # its zero-terminated copy, losing the intervals after it), and 24 fps written as 416667 (libuvc#297).
