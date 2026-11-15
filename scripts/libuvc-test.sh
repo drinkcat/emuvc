@@ -276,6 +276,10 @@ BUG="8-byte input terminal (composite connector): uvc_parse_vc_input_terminal ch
   CHECK_RE='open=0 ' TEST_BIN=api_test run_case api-desc-composite-input bug EMUVC_CONFIG="$CFG/desc-composite-input.toml" $V -- open
 BUG="bcdUVC 0x0101: uvc_open fails with UVC_ERROR_NOT_SUPPORTED" \
   CHECK_RE='open=0 ' TEST_BIN=api_test run_case api-desc-bcduvc-0101 bug EMUVC_CONFIG="$CFG/desc-bcduvc-0101.toml" $V -- open
+# The class-specific VS descriptors after the bulk endpoint (Ecamm Pico iMage): libusb hands them over as
+# the endpoint's extra bytes, where uvcvideo looks too. libuvc must stream.
+BUG="class-specific VS descriptors after the endpoint (Ecamm Pico iMage): libuvc reads only the interface's extra bytes and finds no format" \
+  CHECK_RE='^RESULT mode=poll ' TEST_BIN=api_test run_case api-desc-cs-after-endpoint bug EMUVC_CONFIG="$CFG/desc-cs-after-endpoint.toml" $V -- poll
 # Probe replies uvcvideo copes with (uvc_fixup_video_ctrl, uvc_v4l2_try_format): libuvc must stream.
 BUG="probe reply with dwMaxPayloadTransferSize 0xffff0400: no alternate setting fits, libuvc can't stream" \
   CHECK_RE='^RESULT mode=poll ' TEST_BIN=api_test run_case api-max-payload-huge bug EMUVC_CONFIG="$CFG/max-payload-huge.toml" -- poll

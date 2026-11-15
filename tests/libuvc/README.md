@@ -45,7 +45,8 @@ Runs libuvc (built out of tree, never modified) against the emuvc libusb shim
   camera per broken length, count or descriptor order (told apart by PID, cases `desc-*`): libuvc must
   reject each with `UVC_ERROR_INVALID_DEVICE`. Other `desc-*.toml` must work (an unknown format GUID,
   compression patterns, a vendor descriptor among the VC ones, bcdUVC 0x010a), or are known bugs
-  (`desc-composite-input`, `desc-bcduvc-0101`: valid descriptors libuvc rejects).
+  (`desc-composite-input`, `desc-bcduvc-0101`: valid descriptors libuvc rejects;
+  `desc-cs-after-endpoint`: VS descriptors after the bulk endpoint, which uvcvideo finds).
   `pts-first-only.toml` and `clock-wrap-jitter.toml` exercise payload header timestamps
   (`uvc.clock`). The first shortens the header after a frame's first payload. The second makes the
   PTS/SCR clock wrap, drift, jitter and step back. libuvc parses PTS/SCR without using them, and

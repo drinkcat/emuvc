@@ -166,6 +166,7 @@ unserve
 
 # Bulk streaming through uvcvideo, whose URBs (16 KiB) are smaller than the payloads (32 KiB).
 yuyv synthetic-bulk-hs Synthetic
+yuyv desc-cs-after-endpoint Synthetic       # VS descriptors after the bulk endpoint (Ecamm Pico iMage)
 # A bulk camera that stops only on CLEAR_FEATURE(ENDPOINT_HALT) (libuvc#257): uvcvideo stops bulk streams
 # that way, so a second capture works.
 step "uvcvideo: bulk-stop-clear-halt"
