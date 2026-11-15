@@ -148,8 +148,9 @@ sysfs, as umockdev does, but backed by the live engine).
 
 **USB/IP** (`emuvc-usbip`): `emuvc usbip` serves the configured devices
 (OP_REQ_DEVLIST/IMPORT, CMD_SUBMIT/UNLINK mapped 1:1 onto `Host`; loopback
-only by default, the protocol has no authentication); `emuvc usbip-attach`
-replaces `usbip attach`. `scripts/vm-usbip-test.sh` runs the whole real stack
+only by default, the protocol has no authentication). A device that goes away
+(a disconnect fault) closes its connection, as usbip-host does, which vhci-hcd
+reports as an unplug. `emuvc usbip-attach` replaces `usbip attach`. `scripts/vm-usbip-test.sh` runs the whole real stack
 in a throwaway VM: kernel enumeration through vhci-hcd, uvcvideo streaming
 (V4L2), and libuvc over the real libusb/usbfs.
 

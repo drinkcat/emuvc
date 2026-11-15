@@ -1,0 +1,10 @@
+# A synthetic camera unplugged mid-stream, after 60 isochronous packets. Over USB/IP the server then
+# closes the connection, as usbip-host does when its device goes away, and vhci-hcd reports the
+# disconnect (VM test). A PID of its own (1209:0002), so that stream_test -d finds this camera.
+[[device]]
+model = "synthetic"
+synthetic = { product_id = 0x0002 }
+[[device.fault]]
+on = { iso_in = {} }
+action = "disconnect"
+skip = 60

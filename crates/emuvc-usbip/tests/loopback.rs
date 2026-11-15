@@ -1,7 +1,7 @@
 //! In-process USB/IP client against the server over a real localhost socket.
 
 use std::collections::HashMap;
-use std::io::Write;
+use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -304,4 +304,24 @@ fn usbip_loopback() {
         }
         std::thread::sleep(Duration::from_millis(20));
     }
+}
+
+/// Unplugging the device closes the connection, as usbip-host does when its device goes away
+/// (vhci-hcd then reports the disconnect). A pending URB first completes with -ENODEV.
+#[test]
+fn usbip_unplug_closes_the_connection() {
+    let (host, addr) = start();
+    let (stream, rd) = emuvc_usbip::import(addr, "1-1").unwrap();
+    let mut c = Client::new(stream, rd.devid());
+    let intr = c.submit(7, true, 16, [0; 8], &[], &[]);
+    std::thread::sleep(Duration::from_millis(50));
+    host.detach(host.devices()[0].id);
+    let r = c.recv();
+    assert_eq!((r.command, r.seq, r.status), (RET_SUBMIT, intr, -19)); // ENODEV
+    let mut b = [0u8; 1];
+    assert_eq!(
+        c.s.read(&mut b).unwrap(),
+        0,
+        "the server closed the connection"
+    );
 }

@@ -12,6 +12,7 @@ use emuvc_usb::desc::ConfigView;
 use emuvc_usb::host::CompletionFn;
 use emuvc_usb::{
     Completion, DeviceId, DeviceInfo, Host, SetupPacket, Speed, TransferType, Urb, UrbId, UrbKind,
+    UsbError,
 };
 use log::{debug, info, warn};
 
@@ -192,7 +193,9 @@ impl Server {
     }
 
     fn urb_phase(&self, stream: TcpStream, dev: Arc<DeviceInfo>) -> io::Result<()> {
-        let (tx, rx) = mpsc::channel::<Vec<u8>>();
+        // Reply PDUs for the writer; None closes the connection once the replies before it are
+        // out (the device went away).
+        let (tx, rx) = mpsc::channel::<Option<Vec<u8>>>();
         let wstream = stream.try_clone()?;
         let shutdown = stream.try_clone()?;
         thread::Builder::new()
@@ -200,14 +203,19 @@ impl Server {
             .spawn(move || {
                 let mut w = BufWriter::new(wstream);
                 while let Ok(first) = rx.recv() {
-                    let mut res = w.write_all(&first);
-                    while res.is_ok() {
-                        match rx.try_recv() {
-                            Ok(more) => res = w.write_all(&more),
-                            Err(_) => break,
+                    let (mut res, mut close) = (Ok(()), false);
+                    let mut next = Some(first);
+                    while let Some(msg) = next.take() {
+                        match msg {
+                            Some(pdu) => res = w.write_all(&pdu),
+                            None => close = true,
                         }
+                        if res.is_err() || close {
+                            break;
+                        }
+                        next = rx.try_recv().ok();
                     }
-                    if res.and_then(|_| w.flush()).is_err() {
+                    if res.and_then(|_| w.flush()).is_err() || close {
                         let _ = shutdown.shutdown(Shutdown::Both);
                         break;
                     }
@@ -245,7 +253,7 @@ type Pending = Arc<Mutex<HashMap<u32, Entry>>>;
 struct Conn<'a> {
     host: &'a Host,
     dev: Arc<DeviceInfo>,
-    tx: Sender<Vec<u8>>,
+    tx: Sender<Option<Vec<u8>>>,
     pending: Pending,
 }
 
@@ -438,7 +446,12 @@ impl Conn<'_> {
                 None => return, // connection gone
             };
             if !unlinked {
-                let _ = tx.send(encode_ret_submit(&req, &c));
+                let _ = tx.send(Some(encode_ret_submit(&req, &c)));
+            }
+            // Like usbip-host when its device goes away (stub_disconnect): close the connection,
+            // which vhci-hcd reports as an unplug.
+            if matches!(c.status, Err(UsbError::NoDevice)) {
+                let _ = tx.send(None);
             }
         });
         // `req` moved into the closure; keep what the error path needs.
@@ -464,7 +477,10 @@ impl Conn<'_> {
                         v.extend_from_slice(&[0; 16]);
                     }
                 }
-                let _ = self.tx.send(v);
+                let _ = self.tx.send(Some(v));
+                if e == UsbError::NoDevice {
+                    let _ = self.tx.send(None);
+                }
             }
         }
         Ok(())
@@ -487,6 +503,6 @@ impl Conn<'_> {
         let mut v = ret_header(RET_UNLINK, seq);
         put32(&mut v, status as u32);
         v.extend_from_slice(&[0; 24]);
-        let _ = self.tx.send(v);
+        let _ = self.tx.send(Some(v));
     }
 }

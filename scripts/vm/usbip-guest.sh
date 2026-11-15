@@ -205,6 +205,28 @@ if [ -n "$dev" ]; then
 fi
 unserve
 
+# Unplugged mid-stream (unplug.toml): the server closes the connection, as usbip-host does when its device
+# goes away, and vhci-hcd reports the disconnect. Neither uvcvideo's client nor libuvc through the real
+# libusb may hang then (libuvc#152, #53: stop and close after an unplug).
+disconnects() { dmesg | grep -c "USB disconnect"; }
+step "uvcvideo: unplugged while streaming"
+unplugs=$(disconnects)
+serve unplug Synthetic
+[ -n "$dev" ] && check sh -c "timeout 30 v4l2-ctl -d $dev --set-fmt-video=width=640,height=480,pixelformat=YUYV \
+  --stream-mmap=4 --stream-count=300 >/tmp/unplug.txt 2>&1; rc=\$?; tail -c 200 /tmp/unplug.txt; echo; \
+  echo \"  v4l2-ctl: rc=\$rc\"; [ \$rc -ne 124 ]"
+check test "$(disconnects)" -gt "$unplugs"
+grep -E "fault|disconnected" /tmp/usbip-unplug.log | tail -n 2
+unserve
+step "libuvc through the real libusb: unplugged while streaming"
+unplugs=$(disconnects)
+serve unplug Synthetic
+check sh -c "timeout 30 $STREAM_TEST -d 1209:0002 -f yuyv -s 640x480 -r 30 -n 300 -t 10; rc=\$?; \
+  echo \"  stream_test: rc=\$rc\"; [ \$rc -eq 1 ] || [ \$rc -eq 2 ]"
+check test "$(disconnects)" -gt "$unplugs"
+grep -E "fault|disconnected" /tmp/usbip-unplug.log | tail -n 2
+unserve
+
 step "emuvc log (tail)"
 tail -n 12 /tmp/usbip.log
 dmesg | grep -iE 'error|fail|warn' | grep -v -iE 'acpi|firmware|pci|i8042|rtc' | tail -10
