@@ -1602,7 +1602,7 @@ static const struct { const char *name; mode_fn fn; int not_in_all; } MODES[] = 
   {"info", mode_info, 0}, {"controls", mode_controls, 0}, {"convert", mode_convert, 0}, {"poll", mode_poll, 0},
   {"still", mode_still, 0}, {"multi", mode_multi, 0}, {"status", mode_status, 0}, {"async", mode_async, 0},
   {"negotiate", mode_negotiate, 0}, {"wrap", mode_wrap, 0}, {"open", mode_open, 0},
-  {"absent", mode_absent, 1}, /* explicit only: libuvc crashes on it (libuvc#85) */
+  {"absent", mode_absent, 1}, /* explicit only: it crashed libuvc until libuvc#368 (libuvc#85) */
   {"soak", mode_soak, 1},     /* explicit only: long */
   {"stillbig", mode_stillbig, 1}, /* explicit only: libuvc cuts such stills (libuvc#256) */
 };
