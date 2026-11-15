@@ -218,6 +218,14 @@ pub struct StreamQuirks {
     pub probe_len: Option<u16>,
     /// STALL probe/commit requests whose wLength isn't the probe length.
     pub strict_probe_len: bool,
+    /// STALL SET_CUR(PROBE) when its dwMaxVideoFrameSize is 0, a field the host should leave
+    /// alone (Aveo 1871:0306, Ecamm 18cd:cafe; uvcvideo's UVC_QUIRK_PROBE_EXTRAFIELDS copies it
+    /// from the device's last reply).
+    pub strict_probe_fields: bool,
+    /// STALL every class request to the interface until the host has sent it a SET_INTERFACE
+    /// (the XBox Live Vision camera misbehaves otherwise; uvcvideo's uvc_video_init sends one
+    /// before anything else).
+    pub need_set_interface: bool,
     /// Negotiate the default format/frame whatever the host asks for.
     pub ignore_probe_format: bool,
     /// Delay before the first frame after streaming starts.
@@ -345,6 +353,8 @@ pub struct VsInterface {
     /// Method 3: still image being sent on the still bulk endpoint.
     still_tx: Option<FrameTx>,
     alt: u8,
+    /// The host has sent a SET_INTERFACE since the last reset (`need_set_interface`).
+    set_interface_seen: bool,
     pub error_code: u8,
     stream: Option<Stream>,
     source: Box<dyn FrameSource>,
@@ -384,6 +394,7 @@ impl VsInterface {
             trigger: TRIGGER_NORMAL,
             still_tx: None,
             alt: 0,
+            set_interface_seen: false,
             error_code: 0,
             stream: None,
             source,
@@ -637,6 +648,10 @@ impl VsInterface {
         data: &[u8],
         length: u16,
     ) -> Result<Vec<u8>, u8> {
+        if self.quirks.need_set_interface && !self.set_interface_seen {
+            debug!("{}: class request before any SET_INTERFACE", self.name);
+            return Err(ERR_WRONG_STATE);
+        }
         let probe_like = matches!(selector, VS_PROBE_CONTROL | VS_COMMIT_CONTROL)
             && !matches!(request, GET_LEN | GET_INFO);
         if probe_like && self.quirks.strict_probe_len && length as usize != self.probe_len() {
@@ -650,6 +665,10 @@ impl VsInterface {
         match (selector, request) {
             (VS_PROBE_CONTROL, SET_CUR) => {
                 let req = StreamingControl::from_bytes(data);
+                if self.quirks.strict_probe_fields && req.max_video_frame_size == 0 {
+                    debug!("{}: probe with dwMaxVideoFrameSize 0", self.name);
+                    return Err(ERR_INVALID_VALUE_WITHIN_RANGE);
+                }
                 self.probe = self.negotiate(&req, false)?;
                 debug!("{}: probe {:?} -> {:?}", self.name, req, self.probe);
                 Ok(Vec::new())
@@ -811,6 +830,7 @@ impl VsInterface {
 
     pub fn set_alt(&mut self, cx: &mut Ctx, alt: u8) {
         self.alt = alt;
+        self.set_interface_seen = true;
         match (&self.desc.transfer, alt) {
             (_, 0) => self.stop(),
             (Transfer::Isochronous { .. }, _) => self.start(cx),
@@ -821,6 +841,7 @@ impl VsInterface {
     pub fn reset(&mut self) {
         self.stop();
         self.alt = 0;
+        self.set_interface_seen = false;
         self.commit = None;
         self.still_commit = None;
         self.trigger = TRIGGER_NORMAL;

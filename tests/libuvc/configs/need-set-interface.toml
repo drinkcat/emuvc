@@ -1,0 +1,5 @@
+# The streaming interfaces stall every class request until the host sends them a SET_INTERFACE (the
+# XBox Live Vision camera misbehaves otherwise). uvcvideo sends SET_INTERFACE 0 before probing.
+[[device]]
+model = "luxvisions-30c9-0052"
+uvc = { need_set_interface = true }

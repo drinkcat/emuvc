@@ -196,7 +196,7 @@ CHECK_RE='^RESULT mode=poll ' run_api api-poll-no-eof EMUVC_CONFIG="$CFG/no-eof.
 CHECK_RE='^RESULT mode=convert ' run_api api-convert-no-dht EMUVC_CONFIG="$CFG/no-dht.toml" -- convert
 
 # Quirky-but-working devices: the API must behave as on the default device (strict).
-for c in header-6 header-long header-255 eof-payload idle-zlp probe-len-26 probe-no-frame-size startup-delay no-fid-toggle pts-first-only \
+for c in header-6 header-long header-255 eof-payload probe-extra-fields idle-zlp probe-len-26 probe-no-frame-size startup-delay no-fid-toggle pts-first-only \
          clock-wrap-jitter; do
   CHECK_RE='^RESULT mode=poll ' run_api "api-poll-$c" EMUVC_CONFIG="$CFG/$c.toml" -- poll negotiate
 done
@@ -278,6 +278,10 @@ BUG="a 0 in a discrete interval list ends libuvc's zero-terminated copy: the int
   CHECK_RE='^RESULT mode=info ' TEST_BIN=api_test run_case api-desc-zero-interval bug EMUVC_CONFIG="$CFG/desc-zero-interval.toml" $V -- info
 BUG="libuvc#297: uvc_get_stream_ctrl_format_size() truncates 10000000 / interval, so 416667 (24 fps) isn't found at 24 fps" \
   CHECK_RE='^RESULT mode=negotiate ' TEST_BIN=api_test run_case api-issue-297-24fps bug EMUVC_CONFIG="$CFG/issue-297-24fps.toml" $V -- negotiate
+
+# A camera that needs a SET_INTERFACE before any class request (XBox Live Vision): libuvc must stream.
+BUG="libuvc probes before sending any SET_INTERFACE (uvcvideo's uvc_video_init selects alt 0 first): the XBox Live Vision camera stalls" \
+  CHECK_RE='^RESULT mode=poll ' TEST_BIN=api_test run_case api-need-set-interface bug EMUVC_CONFIG="$CFG/need-set-interface.toml" -- poll
 
 # Asynchronous controls (UVC 1.5 2.4.4): completions and a Control Failure Change reach the status callback.
 CHECK_RE='async_ok=[2-9] async_failed=1' run_api api-async-completion EMUVC_CONFIG="$CFG/synthetic-async.toml" -- async

@@ -532,6 +532,54 @@ fn payload_framing_quirks() {
     );
 }
 
+/// Probe quirks: class requests stall until a SET_INTERFACE (XBox Live Vision); SET_CUR(PROBE)
+/// stalls with dwMaxVideoFrameSize 0 (UVC_QUIRK_PROBE_EXTRAFIELDS).
+#[test]
+fn probe_quirks() {
+    use emuvc_uvc::stream::{StreamQuirks, StreamingControl};
+    let attach = |quirks: StreamQuirks| {
+        let mut cfg = synthetic(SyntheticConfig::default());
+        cfg.uvc = quirks;
+        let host = host();
+        let info = host.attach(build(&cfg).unwrap()).unwrap();
+        let view = ConfigView::parse(&info.configs[0]).unwrap();
+        let iface = parse_function(&view, 0, info.speed).unwrap().streaming[0].interface;
+        (host, info.id, iface)
+    };
+    let probe = |frame_size: u32| {
+        StreamingControl {
+            hint: 1,
+            format_index: 1,
+            frame_index: 1,
+            frame_interval: 333_333,
+            max_video_frame_size: frame_size,
+            ..Default::default()
+        }
+        .to_bytes(48)
+    };
+
+    let (host, dev, iface) = attach(StreamQuirks {
+        need_set_interface: true,
+        ..Default::default()
+    });
+    assert!(uvc_set(&host, dev, VS_PROBE_CONTROL, iface, &probe(0)).is_err());
+    host.control(
+        dev,
+        SetupPacket::new(0x01, 0x0b, 0, iface as u16, 0), // SET_INTERFACE alt 0
+        &[],
+        None,
+    )
+    .unwrap();
+    assert!(uvc_set(&host, dev, VS_PROBE_CONTROL, iface, &probe(0)).is_ok());
+
+    let (host, dev, iface) = attach(StreamQuirks {
+        strict_probe_fields: true,
+        ..Default::default()
+    });
+    assert!(uvc_set(&host, dev, VS_PROBE_CONTROL, iface, &probe(0)).is_err());
+    assert!(uvc_set(&host, dev, VS_PROBE_CONTROL, iface, &probe(614_400)).is_ok());
+}
+
 fn vc_req(
     host: &Host,
     dev: DeviceId,
