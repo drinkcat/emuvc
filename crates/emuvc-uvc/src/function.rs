@@ -35,6 +35,8 @@ pub struct UvcFunction {
     async_cfg: BTreeMap<(u8, u8), (u64, Option<u8>)>,
     /// Asynchronous SET_CURs not completed yet.
     pending: Vec<PendingSet>,
+    /// VC_VIDEO_POWER_MODE_CONTROL's bDevicePowerMode; `None`: no such control.
+    power_mode: Option<u8>,
 }
 
 /// Per-control behaviour:
@@ -45,16 +47,39 @@ pub struct UvcFunction {
 /// selector = 0x02      # PU_BRIGHTNESS_CONTROL
 /// async_ms = 200       # asynchronous (GET_INFO D4): SET_CUR completes 200 ms later
 /// fail = 0x02          # ... with a Control Failure Change ("wrong state") instead of the value
+///
+/// [[device.control]]   # an extension unit control: 33 bytes, read-only, no GET_RES
+/// entity = 5
+/// selector = 1
+/// len = 33
+/// info = 0x01
+/// res = []
+///
+/// [[device.control]]   # VC_VIDEO_POWER_MODE_CONTROL: battery powered, vendor mode supported
+/// entity = 0
+/// selector = 1
+/// cur = [0x50]
 /// ```
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
 pub struct ControlSpec {
     pub entity: u8,
     pub selector: u8,
-    #[serde(default)]
     pub async_ms: Option<u64>,
-    #[serde(default)]
     pub fail: Option<u8>,
+    /// GET_INFO capability bits (D0 GET, D1 SET, D3 autoupdate, D4 async).
+    pub info: Option<u8>,
+    /// Extension unit controls: GET_LEN. The control starts over as an opaque one of that
+    /// size (MIN all 0, MAX all 0xff), keeping its GET_INFO.
+    pub len: Option<u16>,
+    /// Extension unit controls: GET_MIN/MAX/RES/DEF answers; `[]` makes the request STALL.
+    /// GET_DEF is also the value after a reset.
+    pub min: Option<Vec<u8>>,
+    pub max: Option<Vec<u8>>,
+    pub res: Option<Vec<u8>>,
+    pub def: Option<Vec<u8>>,
+    /// Entity 0 selector 1 only: bDevicePowerMode, which adds the power mode control.
+    pub cur: Option<Vec<u8>>,
 }
 
 struct PendingSet {
@@ -221,6 +246,7 @@ impl UvcFunction {
             events: Vec::new(),
             async_cfg: BTreeMap::new(),
             pending: Vec::new(),
+            power_mode: None,
         };
         f.update_auto_links(false);
         f
@@ -266,15 +292,65 @@ impl UvcFunction {
         }
     }
 
-    /// Applies per-control settings (asynchronous completion).
+    /// Adds VC_VIDEO_POWER_MODE_CONTROL (UVC 1.5 4.2.1.1), starting with
+    /// `bDevicePowerMode` (D7..4: power source and vendor mode support).
+    pub fn set_power_mode(&mut self, mode: u8) {
+        self.power_mode = Some(mode);
+    }
+
+    /// Applies per-control settings (ranges, sizes, asynchronous completion).
     pub fn configure_controls(&mut self, specs: &[ControlSpec]) -> Result<(), String> {
         for s in specs {
+            if (s.entity, s.selector) == (0, VC_VIDEO_POWER_MODE_CONTROL) {
+                match s.cur.as_deref() {
+                    Some(&[m]) => self.power_mode = Some(m),
+                    _ => return Err(format!("{}: power mode needs cur = [byte]", self.name)),
+                }
+                continue;
+            }
+            let xu = matches!(
+                self.vc.entity(s.entity).map(|e| &e.kind),
+                Some(EntityKind::Extension { .. })
+            );
             let c = self
                 .controls
                 .get_mut(&(s.entity, s.selector))
                 .ok_or_else(|| {
                     format!("{}: no control {}.{:#04x}", self.name, s.entity, s.selector)
                 })?;
+            let what = format!("{}: control {}.{:#04x}", self.name, s.entity, s.selector);
+            let ranges = [&s.min, &s.max, &s.res, &s.def];
+            if !xu && (s.len.is_some() || ranges.iter().any(|r| r.is_some())) {
+                return Err(format!(
+                    "{what}: len/min/max/res/def are for extension units"
+                ));
+            }
+            if s.cur.is_some() {
+                return Err(format!(
+                    "{what}: cur is for the power mode; def is the value after reset"
+                ));
+            }
+            if let Some(len) = s.len {
+                *c = Control::raw(len).with_info(c.info);
+            }
+            let len = c.len as usize;
+            for (field, v) in [
+                (&mut c.min, &s.min),
+                (&mut c.max, &s.max),
+                (&mut c.res, &s.res),
+                (&mut c.def, &s.def),
+            ] {
+                match v.as_deref() {
+                    None => {}
+                    Some([]) => *field = None,
+                    Some(b) if b.len() == len => *field = Some(b.to_vec()),
+                    Some(b) => return Err(format!("{what}: {} bytes, GET_LEN is {len}", b.len())),
+                }
+            }
+            c.reset();
+            if let Some(info) = s.info {
+                c.info = info;
+            }
             if s.async_ms.is_some() || s.fail.is_some() {
                 c.info |= INFO_ASYNC;
                 self.async_cfg.insert(
@@ -435,6 +511,25 @@ impl UvcFunction {
         }
     }
 
+    /// VC_VIDEO_POWER_MODE_CONTROL (4.2.1.1): D3..0 is the mode (0 full power, 1 vendor
+    /// dependent, if D4 says it is supported; others reserved), D7..4 are read-only.
+    fn power_request(&mut self, pm: u8, req: u8, data: &[u8]) -> Result<Vec<u8>, u8> {
+        match req {
+            GET_CUR => Ok(vec![pm]),
+            GET_INFO => Ok(vec![INFO_GET | INFO_SET]),
+            SET_CUR => match *data {
+                [v] if v & 0x0f == 0 || (v & 0x0f == 1 && pm & 0x10 != 0) => {
+                    debug!("{}: power mode {:#04x}", self.name, v & 0x0f);
+                    self.power_mode = Some(pm & 0xf0 | v & 0x0f);
+                    Ok(Vec::new())
+                }
+                [_] => Err(ERR_OUT_OF_RANGE),
+                _ => Err(ERR_UNKNOWN),
+            },
+            _ => Err(ERR_INVALID_REQUEST),
+        }
+    }
+
     fn vs_mut(&mut self, iface: u8) -> Option<&mut VsInterface> {
         self.vs.iter_mut().find(|v| v.interface() == iface)
     }
@@ -451,10 +546,11 @@ impl UvcFunction {
             setup.request,
         );
         if entity == 0 {
-            return match (cs, req) {
-                (VC_REQUEST_ERROR_CODE_CONTROL, GET_CUR) => Ok(vec![self.request_error]),
-                (VC_REQUEST_ERROR_CODE_CONTROL, GET_INFO) => Ok(vec![INFO_GET]),
-                (VC_REQUEST_ERROR_CODE_CONTROL, _) => Err(ERR_INVALID_REQUEST),
+            return match (cs, req, self.power_mode) {
+                (VC_REQUEST_ERROR_CODE_CONTROL, GET_CUR, _) => Ok(vec![self.request_error]),
+                (VC_REQUEST_ERROR_CODE_CONTROL, GET_INFO, _) => Ok(vec![INFO_GET]),
+                (VC_REQUEST_ERROR_CODE_CONTROL, _, _) => Err(ERR_INVALID_REQUEST),
+                (VC_VIDEO_POWER_MODE_CONTROL, _, Some(pm)) => self.power_request(pm, req, data),
                 _ => Err(ERR_INVALID_CONTROL),
             };
         }
@@ -572,6 +668,9 @@ impl Function for UvcFunction {
         self.request_error = 0;
         self.status.clear();
         self.pending.clear();
+        if let Some(pm) = &mut self.power_mode {
+            *pm &= 0xf0;
+        }
         for vs in &mut self.vs {
             vs.reset();
         }

@@ -571,6 +571,8 @@ pub fn build(cfg: &DeviceConfig) -> Result<CompositeDevice, String> {
                 uvc.set_control(XU_FIRST + x, sel, emuvc_uvc::control::Control::raw(len));
             }
         }
+        // Power mode control: USB powered, vendor dependent mode supported.
+        uvc.set_power_mode(0x30);
         if i == 0 {
             uvc.set_events(cfg.events.clone());
             uvc.configure_controls(&cfg.controls)?;

@@ -1,0 +1,28 @@
+# Synthetic camera with reshaped extension unit controls (`[[device.control]]`): an odd-sized
+# read-only control without GET_RES, a write-only control, an asynchronous one; and a
+# battery-powered power mode control without vendor dependent mode (UVC 1.5 4.2.1.1).
+[[device]]
+model = "synthetic"
+
+[[device.control]]  # XU 5 selector 1: 33 bytes, GET only, no GET_RES, GET_DEF = 0x5a...
+entity = 5
+selector = 1
+len = 33
+info = 0x01
+res = []
+def = [0x5a, 0x5a, 0x5a, 0x5a, 0x5a, 0x5a, 0x5a, 0x5a, 0x5a, 0x5a, 0x5a, 0x5a, 0x5a, 0x5a, 0x5a, 0x5a, 0x5a, 0x5a, 0x5a, 0x5a, 0x5a, 0x5a, 0x5a, 0x5a, 0x5a, 0x5a, 0x5a, 0x5a, 0x5a, 0x5a, 0x5a, 0x5a, 0x5a]
+
+[[device.control]]  # XU 5 selector 2: SET only
+entity = 5
+selector = 2
+info = 0x02
+
+[[device.control]]  # XU 6 selector 4: 64 bytes, asynchronous (no status event in libuvc: polled)
+entity = 6
+selector = 4
+async_ms = 30
+
+[[device.control]]  # power mode: battery powered (D6), no vendor dependent mode (D4 = 0)
+entity = 0
+selector = 1
+cur = [0x40]
