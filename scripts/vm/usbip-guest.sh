@@ -95,6 +95,75 @@ for model in logitech-046d-0843 logitech-046d-0843-uvc15; do
   check "$EMUVC" check-frames -f yuyv -s 640x480 /tmp/c930e.yuyv
 done
 
+# uvcvideo as the reference for the libuvc cases that say it copes (tests/libuvc/configs).
+step "Luxvisions IR function (libuvc: api-second-function)"
+# uvcvideo binds both functions: video devices hang off the IR function's VideoControl interface (2).
+check sh -c 'for n in /sys/class/video4linux/*; do readlink -f "$n/device"; done | grep -q "1-1:1\.2$"'
+
+# serve CONFIG PATTERN: serves a configuration on the next port and attaches it; $dev is its first new
+# video device whose name matches PATTERN (the capture one: metadata devices come after it), $srv the
+# server's PID (killing it detaches the device and frees the vhci port).
+port=3250
+serve() {
+  cfg=$1 pat=$2
+  before=$(ls /sys/class/video4linux)
+  EMUVC_LOG="${EMUVC_LOG:-info}" "$EMUVC" usbip --listen 127.0.0.1:$port \
+    -c "$ROOT/tests/libuvc/configs/$cfg.toml" >/tmp/usbip-$cfg.log 2>&1 &
+  srv=$!
+  for i in 1 2 3 4 5 6 7 8 9 10; do
+    "$EMUVC" usbip-attach --server 127.0.0.1:$port 1-1 && break
+    sleep 0.2
+  done
+  port=$((port + 1))
+  dev=
+  for i in $(seq 100); do
+    for n in $(ls /sys/class/video4linux | sort -V); do
+      echo "$before" | grep -qx "$n" && continue
+      grep -q "$pat" "/sys/class/video4linux/$n/name" 2>/dev/null && [ -z "$dev" ] && dev=/dev/$n
+    done
+    [ -n "$dev" ] && break
+    sleep 0.1
+  done
+  check test -n "$dev"
+}
+unserve() { kill "$srv" 2>/dev/null; wait "$srv" 2>/dev/null; sleep 0.5; }
+# yuyv CONFIG PATTERN: 30 YUYV 640x480 frames through uvcvideo, stamps checked (gaps are allowed).
+yuyv() {
+  step "uvcvideo: $1"
+  serve "$1" "$2"
+  [ -n "$dev" ] && check timeout 30 v4l2-ctl -d "$dev" --set-fmt-video=width=640,height=480,pixelformat=YUYV \
+    --stream-mmap=4 --stream-count=30 --stream-to=/tmp/$1.yuyv && check "$EMUVC" check-frames -f yuyv -s 640x480 /tmp/$1.yuyv
+  dmesg | grep -i "uvcvideo" | tail -n 2
+  unserve
+}
+yuyv need-set-interface "Integrated RGB"    # needs SET_INTERFACE before class requests
+yuyv probe-zero-index "Integrated RGB"      # probe reply with format/frame index 0
+yuyv max-payload-huge "Integrated RGB"      # dwMaxPayloadTransferSize 0xffff0400
+yuyv desc-composite-input Synthetic         # an 8-byte composite input terminal
+yuyv desc-bcduvc-0101 Synthetic             # bcdUVC 0x0101
+yuyv isight Synthetic                       # the built-in iSight's packet format
+yuyv quickcam-vendor-class Synthetic        # vendor-specific interface classes, by VID/PID
+# ERR on one payload: uvcvideo drops the frame with nodrop=0, the others are intact.
+echo 0 >/sys/module/uvcvideo/parameters/nodrop 2>/dev/null
+yuyv err-payload "Integrated RGB"
+echo 1 >/sys/module/uvcvideo/parameters/nodrop 2>/dev/null
+# Overlong frames: uvcvideo flags them (V4L2_BUF_FLAG_ERROR, which v4l2-ctl --verbose prints).
+step "uvcvideo: frame-overrun"
+serve frame-overrun "Integrated RGB"
+[ -n "$dev" ] && check sh -c "timeout 30 v4l2-ctl -d $dev --set-fmt-video=width=640,height=480,pixelformat=YUYV \
+  --stream-mmap=4 --stream-count=5 --verbose 2>&1 | grep -q error"
+unserve
+# EOF only in header-only payloads, FID never toggling: MJPEG frames must still end. uvcvideo syncs on FID
+# toggles unless the device has UVC_QUIRK_STREAM_NO_FID (0x10), which takes the quirks parameter here.
+step "uvcvideo: eof-payload-no-fid"
+q=$(cat /sys/module/uvcvideo/parameters/quirks 2>/dev/null)
+echo 16 >/sys/module/uvcvideo/parameters/quirks 2>/dev/null
+serve eof-payload-no-fid "Integrated RGB"
+[ -n "$dev" ] && check timeout 30 v4l2-ctl -d "$dev" --set-fmt-video=width=640,height=480,pixelformat=MJPG \
+  --stream-mmap=4 --stream-count=30 --stream-to=/tmp/eof.mjpg
+[ -n "$q" ] && echo "$q" >/sys/module/uvcvideo/parameters/quirks 2>/dev/null
+unserve
+
 step "emuvc log (tail)"
 tail -n 12 /tmp/usbip.log
 dmesg | grep -iE 'error|fail|warn' | grep -v -iE 'acpi|firmware|pci|i8042|rtc' | tail -10

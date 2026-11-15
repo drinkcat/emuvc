@@ -677,6 +677,31 @@ fn probe_quirks() {
     });
     assert!(uvc_set(&host, dev, VS_PROBE_CONTROL, iface, &probe(0)).is_err());
     assert!(uvc_set(&host, dev, VS_PROBE_CONTROL, iface, &probe(614_400)).is_ok());
+
+    // Replies with format/frame index 0; a commit with 0 keeps the probed format and frame.
+    let (host, dev, iface) = attach(StreamQuirks {
+        zero_index_replies: true,
+        ..Default::default()
+    });
+    let get_cur = |cs: u8| {
+        let r = host
+            .control(
+                dev,
+                SetupPacket::new(0xa1, GET_CUR, (cs as u16) << 8, iface as u16, 48),
+                &[],
+                None,
+            )
+            .unwrap();
+        StreamingControl::from_bytes(&r)
+    };
+    assert!(uvc_set(&host, dev, VS_PROBE_CONTROL, iface, &probe(0)).is_ok());
+    let p = get_cur(VS_PROBE_CONTROL);
+    assert_eq!((p.format_index, p.frame_index), (0, 0));
+    let zero = StreamingControl {
+        frame_interval: 333_333,
+        ..p
+    };
+    assert!(uvc_set(&host, dev, VS_COMMIT_CONTROL, iface, &zero.to_bytes(48)).is_ok());
 }
 
 fn vc_req(

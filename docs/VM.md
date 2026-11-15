@@ -40,3 +40,9 @@ dmesg lines are always printed. A run of `true` takes well under a second.
 lsusb, V4L2 capture through uvcvideo (frames checked with `emuvc
 check-frames`), and libuvc's `stream_test` through the real libusb (allowing two skipped
 frames: over USB/IP frames can arrive in bursts, and libuvc then skips all but the newest).
+It then serves configurations whose libuvc cases say uvcvideo copes (`tests/libuvc/configs`: a camera
+that needs SET_INTERFACE first, zero format/frame indexes, a huge dwMaxPayloadTransferSize, a composite
+input terminal, bcdUVC 0x0101, the iSight, vendor-class QuickCams, ERR on one payload with
+`nodrop=0`, overlong frames flagged as errors, EOF only in empty payloads with
+`UVC_QUIRK_STREAM_NO_FID`) and captures through uvcvideo, the reference. Each server is stopped after
+its check, which frees its vhci port.

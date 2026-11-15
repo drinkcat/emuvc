@@ -239,6 +239,10 @@ pub struct StreamQuirks {
     pub need_set_interface: bool,
     /// Negotiate the default format/frame whatever the host asks for.
     pub ignore_probe_format: bool,
+    /// Probe and commit replies say bFormatIndex/bFrameIndex 0, and a commit with 0 keeps the
+    /// probed format and frame (the Fuji Finepix; uvcvideo's uvc_video_init fixes the indexes
+    /// up, and it commits what the device replied).
+    pub zero_index_replies: bool,
     /// Delay before the first frame after streaming starts.
     pub startup_ms: u32,
     /// Device clock (PTS/SCR) misbehaviour.
@@ -585,6 +589,10 @@ impl VsInterface {
     /// The structure as the device reports it (quirks applied).
     fn report(&self, c: &StreamingControl, which: Report) -> Vec<u8> {
         let mut c = c.clone();
+        if self.quirks.zero_index_replies {
+            c.format_index = 0;
+            c.frame_index = 0;
+        }
         if let Some(m) = self.quirks.max_payload_transfer_size {
             c.max_payload_transfer_size = m;
         }
@@ -742,7 +750,11 @@ impl VsInterface {
             }
             (VS_PROBE_CONTROL | VS_COMMIT_CONTROL, GET_INFO) => Ok(vec![INFO_GET | INFO_SET]),
             (VS_COMMIT_CONTROL, SET_CUR) => {
-                let req = StreamingControl::from_bytes(data);
+                let mut req = StreamingControl::from_bytes(data);
+                if self.quirks.zero_index_replies && req.format_index == 0 && req.frame_index == 0 {
+                    req.format_index = self.probe.format_index;
+                    req.frame_index = self.probe.frame_index;
+                }
                 let c = self.negotiate(&req, true)?;
                 info!(
                     "{}: commit format {} frame {} interval {}",
