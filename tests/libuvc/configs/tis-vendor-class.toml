@@ -1,0 +1,14 @@
+# The Imaging Source 199e:8101: UVC, but with vendor-specific interface classes (bInterfaceClass
+# 0xff, subclass 1 for VideoControl and 2 for VideoStreaming). libuvc recognises these by VID/PID.
+[[device]]
+model = "synthetic"
+synthetic = { vendor_id = 0x199e, product_id = 0x8101 }
+
+[[device.patch]]
+target = { iface = "vc", descriptor = "interface" }
+set = [[5, 0xff]]                                    # bInterfaceClass
+
+[[device.patch]]
+target = { iface = "vs", descriptor = "interface" }  # every alternate setting
+every = true
+set = [[5, 0xff]]

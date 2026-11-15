@@ -252,6 +252,12 @@ done <<'EOF'
 0118 still-sizes-over
 0119 still-compression-over
 EOF
+# UVC cameras with vendor-specific interface classes (bInterfaceClass 0xff): The Imaging Source's,
+# which libuvc recognises by VID/PID (all modes, strict), and Logitech's, which uvcvideo binds by
+# VID/PID and libuvc doesn't list.
+CHECK_RE='^RESULT mode=wrap ' run_api api-tis-vendor-class EMUVC_CONFIG="$CFG/tis-vendor-class.toml" $V -- -m 1500 all
+BUG="UVC cameras with vendor-specific interface classes (QuickCam 046d:08c1-08c7, Aveo 1871:0516, Oculus 2833:0211), which uvcvideo binds by VID/PID: libuvc only knows The Imaging Source's" \
+  CHECK_RE='open=0 ' TEST_BIN=api_test run_case api-quickcam-vendor-class bug EMUVC_CONFIG="$CFG/quickcam-vendor-class.toml" $V -- open
 # libuvc skips 199e:8201-8208 (The Imaging Source) when listing devices.
 CHECK_RE='devices=0 ' run_api api-skip-199e-8201 EMUVC_CONFIG="$CFG/skip-199e-8201.toml" $V -- open
 # Valid descriptors libuvc rejects (uvcvideo takes both): the camera must open.
