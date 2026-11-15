@@ -97,6 +97,15 @@ pub unsafe extern "C" fn libusb_submit_transfer(transfer: *mut libusb_transfer) 
     if transfer.is_null() {
         return LIBUSB_ERROR_INVALID_PARAM;
     }
+    let per_type = match unsafe { (*transfer).type_ } {
+        LIBUSB_TRANSFER_TYPE_ISOCHRONOUS => "submit_transfer_iso",
+        LIBUSB_TRANSFER_TYPE_BULK => "submit_transfer_bulk",
+        LIBUSB_TRANSFER_TYPE_INTERRUPT => "submit_transfer_interrupt",
+        _ => "submit_transfer_control",
+    };
+    if let Some(e) = crate::faults::check(per_type) {
+        return e;
+    }
     unsafe {
         let t = &mut *transfer;
         let Some(h) = handle_ref(t.dev_handle) else {
