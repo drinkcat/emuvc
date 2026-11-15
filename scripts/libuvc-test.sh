@@ -302,18 +302,16 @@ run_api_bug() { # NAME [VAR=val ...]: all modes, strict
   local name=$1; shift
   CHECK_RE='^RESULT mode=wrap ' TEST_BIN=api_test run_case "$name" bug "$@" -- -m 1500 all
 }
-BUG="libuvc#348: uvc_open rejects an encoding unit (unknown VC subtype)" \
-  run_api_bug api-issue-encoding-unit EMUVC_CONFIG="$CFG/issue-encoding-unit.toml" $V
 BUG="one frame descriptor's interval list overruns its bLength: libuvc rejects the whole device" \
   run_api_bug api-desc-interval-count-over EMUVC_CONFIG="$CFG/desc-interval-count-over.toml" $V
 
-# The C930e's UVC 1.5 configuration alone: a compliant UVC 1.5 camera with an encoding unit and H.264
-# on a second streaming interface. libuvc must stream YUYV from interface 1.
+# UVC 1.5 encoding units: libuvc skips them since libuvc#358 (it rejected the camera, libuvc#348). A
+# synthetic camera with one, and the C930e's UVC 1.5 configuration alone (a compliant UVC 1.5 camera with
+# an encoding unit and H.264 on a second streaming interface): libuvc must stream YUYV from interface 1.
+CHECK_RE='^RESULT mode=wrap ' run_api api-issue-encoding-unit EMUVC_CONFIG="$CFG/issue-encoding-unit.toml" $V -- -m 1500 all
 C930E15=EMUVC_DEVICE=logitech-046d-0843-uvc15
-BUG="libuvc#348: uvc_open rejects the C930e's UVC 1.5 configuration (encoding unit)" \
-  run_case c930e-uvc15-yuyv bug $C930E15 -- -f yuyv -s 640x480 -r 30 -n 30 -t 15
-BUG="libuvc#348: uvc_open rejects the C930e's UVC 1.5 configuration (encoding unit)" \
-  run_api_bug api-c930e-uvc15 $C930E15 $V
+run_case c930e-uvc15-yuyv pass $C930E15 -- -f yuyv -s 640x480 -r 30 -n 30 -t 15
+CHECK_RE='^RESULT mode=wrap ' run_api api-c930e-uvc15 $C930E15 $V -- -m 1500 all
 
 # Shim-level libusb failures (EMUVC_LIBUSB_FAIL): libuvc's error paths must neither crash nor hang.
 # FAULT[:mode] ; default mode is every mode in one process (lenient).
