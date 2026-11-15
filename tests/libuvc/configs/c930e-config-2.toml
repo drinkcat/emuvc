@@ -1,0 +1,6 @@
+# The Logitech C930e with its second configuration active (UVC 1.5: encoding unit, H.264 interface),
+# as after `echo 2 > bConfigurationValue`. Hosts must parse the active configuration, not configuration
+# index 0 (UVC 1.0; libuvc#357).
+[[device]]
+model = "logitech-046d-0843"
+configuration = 2

@@ -156,6 +156,11 @@ CHECK_RE='devices: 2' run_case two-devices pass EMUVC_DEVICE=luxvisions-30c9-005
 C930E=EMUVC_DEVICE=logitech-046d-0843
 run_case c930e-mjpeg pass $C930E -- -f mjpeg -s 1280x720 -r 30 -n 30 -t 15
 run_case c930e-yuyv pass $C930E -- -f yuyv -s 640x480 -r 30 -n 30 -t 15
+# The C930e with its UVC 1.5 configuration active (as after `echo 2 > bConfigurationValue`): libuvc
+# must parse that one, not configuration index 0. The first case checks the emulation.
+CHECK_RE='open=0 .* config=2 ' TEST_BIN=api_test run_case api-c930e-config-2-active pass EMUVC_CONFIG="$CFG/c930e-config-2.toml" $V -- open
+BUG="libuvc#357: libuvc parses configuration index 0 (UVC 1.0 here), not the active configuration (UVC 1.5)" \
+  CHECK_RE='open=0 .* config=2 bcduvc=0x0150' TEST_BIN=api_test run_case api-c930e-config-2 bug EMUVC_CONFIG="$CFG/c930e-config-2.toml" $V -- open
 run_case iso-errors pass EMUVC_CONFIG="$CFG/iso-errors.toml" -- -f mjpeg -s 640x480 -r 30 -n 60 -t 20 --allow-gaps --allow-corrupt
 # The device commits dwMaxPayloadTransferSize 0: libuvc must not crash (it divided by zero before
 # libuvc#340) and falls back to the first alt setting with bandwidth. That alt is too small for the

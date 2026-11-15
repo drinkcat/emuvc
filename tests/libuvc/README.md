@@ -57,8 +57,9 @@ Runs libuvc (built out of tree, never modified) against the emuvc libusb shim
 
 `api_test [-d VID:PID] [-n INDEX] [-m MS] [-l] MODE...` exercises libuvc's public API
 (modes: `info controls convert poll still multi status async negotiate wrap open`, or `all`;
-`open` only lists, finds and opens the device, and prints the outcome for the descriptor cases; with
-`-x` it leaves the device open for `uvc_exit()` to close; `absent`, not part of `all`, calls the typed
+`open` only lists, finds and opens the device, and prints the outcome for the descriptor cases, with
+the active configuration and the bcdUVC libuvc parsed; with `-x` it leaves the device open for
+`uvc_exit()` to close; `absent`, not part of `all`, calls the typed
 controls of the units the device lacks, which must fail cleanly; `soak`, not part of `all` either,
 opens, streams, stops and closes 20 times in one context; `stillbig`, explicit too, triggers a method 2
 still larger than the video frames, which must arrive whole). It discovers
