@@ -182,7 +182,8 @@ impl ProbeOverride {
 pub struct StreamQuirks {
     pub idle: IdlePayload,
     /// Payload header length (default 12 = PTS + SCR; 2 = none, 6 = PTS).
-    /// Longer headers carry metadata bytes after the SCR. 0 and 1 are bogus: the
+    /// Longer headers carry metadata bytes after the SCR in a frame's payloads (the
+    /// frame index, then filler); idle payloads stop at the SCR. 0 and 1 are bogus: the
     /// payload is that bHeaderLength byte alone, then frame data.
     pub header_len: Option<u8>,
     /// Set the PTS and SCR flags whatever the header length (bogus headers).
@@ -214,6 +215,9 @@ pub struct StreamQuirks {
     pub mjpeg_strip_soi: bool,
     /// Every Nth video frame carries no data: a header-only payload with EOF.
     pub empty_every: Option<u32>,
+    /// The payload headers of every Nth video frame stop at the SCR: no metadata, while the
+    /// other frames carry `header_len` - 12 bytes of it.
+    pub no_metadata_every: Option<u32>,
     /// Restrict err/drop/truncate_every to the first N frames of each stream
     /// (e.g. cameras sending garbage while the sensor starts).
     pub only_first_frames: Option<u64>,
@@ -333,6 +337,8 @@ struct FrameTx {
     still: bool,
     /// `isight`: the frame's header packet has been sent.
     isight_header: bool,
+    /// `no_metadata_every`: no metadata in this frame's payload headers.
+    no_meta: bool,
 }
 
 struct Stream {
@@ -892,6 +898,7 @@ impl VsInterface {
             error_at: None,
             still: true,
             isight_header: false,
+            no_meta: false,
         })
     }
 
@@ -1062,6 +1069,7 @@ impl VsInterface {
         let empty = every(self.quirks.empty_every);
         let error = every(self.quirks.err_every);
         let error_mid = every(self.quirks.err_payload);
+        let no_meta = every(self.quirks.no_metadata_every);
         let captured_ns = st.start_ns + latest * st.interval_ns;
         let (spec, interval_ns) = (st.spec, st.interval_ns);
         // Method 2 still capture: this frame is the still image.
@@ -1084,6 +1092,7 @@ impl VsInterface {
                 error_at: None,
                 still: false,
                 isight_header: false,
+                no_meta,
             });
         }
         let mut tx = tx.unwrap();
@@ -1140,6 +1149,10 @@ impl VsInterface {
         let scr = hlen >= if pts { 12 } else { 8 };
         if scr || self.quirks.lie_pts_scr {
             info |= HDR_SCR;
+        }
+        // Metadata describes a frame: none in idle payloads, nor in `no_metadata_every` frames.
+        if f.is_none_or(|f| f.no_meta) {
+            hlen = hlen.min(2 + if pts { 4 } else { 0 } + if scr { 6 } else { 0 });
         }
         if eof && !self.quirks.no_eof {
             info |= HDR_EOF;

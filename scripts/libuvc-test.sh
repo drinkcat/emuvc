@@ -171,8 +171,12 @@ run_case no-eof pass EMUVC_CONFIG="$CFG/no-eof.toml" -- -f yuyv -s 640x480 -r 30
 run_case pts-first-only pass EMUVC_CONFIG="$CFG/pts-first-only.toml" -- -f yuyv -s 640x480 -r 30 -n 30 -t 15
 run_case pts-first-only-mjpeg pass EMUVC_CONFIG="$CFG/pts-first-only.toml" -- -f mjpeg -s 1280x720 -r 30 -n 30 -t 15
 run_case clock-wrap-jitter pass EMUVC_CONFIG="$CFG/clock-wrap-jitter.toml" -- -f mjpeg -s 1280x720 -r 30 -n 60 -t 15
-# 243 bytes of metadata in every payload header: frames intact, metadata bounded.
-run_case header-255 pass EMUVC_CONFIG="$CFG/header-255.toml" -- -f yuyv -s 640x480 -r 30 -n 30 -t 15
+# 243 bytes of metadata in every payload header: frames intact, metadata bounded, and each frame's own
+# (--check-meta: it starts with the frame index).
+CHECK_RE='meta=[1-9]' run_case header-255 pass EMUVC_CONFIG="$CFG/header-255.toml" -- -f yuyv -s 640x480 -r 30 -n 30 -t 15 --check-meta
+# Metadata on every other frame only: a frame without must not report the previous frame's.
+BUG="a frame without payload header metadata reports the previous frame's: _uvc_populate_frame() updates frame->metadata only when the frame has some" \
+  CHECK_RE='meta=[1-9]' run_case header-metadata-every-other bug EMUVC_CONFIG="$CFG/header-metadata-every-other.toml" -- -f yuyv -s 640x480 -r 30 -n 30 -t 15 --check-meta
 # EOF in a header-only payload after each frame's data (the FID still toggles): frames intact.
 run_case eof-payload pass EMUVC_CONFIG="$CFG/eof-payload.toml" -- -f yuyv -s 640x480 -r 30 -n 30 -t 15
 BUG="EOF in a header-only payload is ignored (checked only when the payload has data): without an FID toggle, MJPEG frames never end" \

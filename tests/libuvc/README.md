@@ -23,10 +23,14 @@ Runs libuvc (built out of tree, never modified) against the emuvc libusb shim
   libuvc bugs (still failing, or passing now).
 * `stream_test.c` is the client: it streams, decodes the frame stamp
   (`crates/emuvc-video/src/stamp.rs`) and reports
-  `RESULT frames=.. corrupt=.. gaps=.. max_gap=.. skipped=.. fps=..` (exit 0 ok, 1 failed, 2 setup/usage error).
+  `RESULT frames=.. corrupt=.. gaps=.. max_gap=.. skipped=.. fps=.. meta=.. meta_bad=..` (exit 0 ok, 1 failed,
+  2 setup/usage error).
   A gap is a frame lost before libuvc assembled it (device, transport, payload parsing); `skipped`
   counts frames libuvc assembled but overwrote before its callback thread ran (host scheduling,
   reported only). `frame->sequence` tells the two apart.
+  `meta` counts the frames with metadata (`frame->metadata`: libuvc's copy of the payload header bytes after
+  PTS/SCR). emuvc's start with the frame index, so with `--check-meta` a frame's metadata must start with
+  its own (`meta_bad` counts the others).
   `--controls` exercises brightness/AE mode; `--list` lists devices; `--fps-tol PCT` checks the rate;
   `--cb-sleep MS` makes the callback slow;
   `--max-gaps N` tolerates N gaps (`--allow-gaps`: any number).

@@ -1,0 +1,6 @@
+# Payload header metadata on every other frame only: bHeaderLength 20 (8 bytes after PTS/SCR, the frame
+# index first) in the payloads of even frames, 12 in those of odd frames. A host must not report a frame's
+# metadata for the next frame, which has none.
+[[device]]
+model = "luxvisions-30c9-0052"
+uvc = { header_len = 20, no_metadata_every = 2 }

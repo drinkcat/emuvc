@@ -632,6 +632,54 @@ fn bulk_stop_clear_halt() {
     assert!(probe_commit(&host, info.id, vs.interface, 2, 1, 333_333, 48).is_ok());
 }
 
+/// Payload header metadata (after the SCR: the frame index, then filler) belongs to frames: all
+/// the payloads of a frame carry the same, idle payloads between frames none, and neither do the
+/// frames `no_metadata_every` picks.
+#[test]
+fn header_metadata() {
+    let mut cfg = synthetic(SyntheticConfig::default());
+    cfg.uvc.header_len = Some(20);
+    cfg.uvc.no_metadata_every = Some(2);
+    let host = host();
+    let dev = host.attach(build(&cfg).unwrap()).unwrap().id;
+    probe_commit(&host, dev, 1, 1, 3, 333333, 48).unwrap(); // MJPEG 160x120
+    host.control(dev, SetupPacket::new(0x01, 0x0b, 5, 1, 0), &[], None)
+        .unwrap(); // alt 5: 3x1024
+    // The metadata's frame index (None: no metadata) of each payload with data, per frame (FID
+    // run); the header lengths of the idle payloads.
+    let (mut frames, mut idle, mut fid) = (Vec::<Vec<Option<u32>>>::new(), Vec::new(), None);
+    while frames.len() < 7 {
+        let c = host.transfer(Urb::iso_in(dev, 0x81, vec![3072; 32]));
+        for p in c.iso.iter().map(|p| &p.data).filter(|d| !d.is_empty()) {
+            let (hlen, info) = (p[0] as usize, p[1]);
+            if p.len() == hlen {
+                idle.push(hlen);
+                continue;
+            }
+            if fid != Some(info & HDR_FID) {
+                frames.push(Vec::new());
+                fid = Some(info & HDR_FID);
+            }
+            assert!(hlen == 20 || hlen == 12, "bHeaderLength {hlen}");
+            let meta = (hlen == 20).then(|| u32::from_le_bytes(p[12..16].try_into().unwrap()));
+            frames.last_mut().unwrap().push(meta);
+        }
+    }
+    assert!(
+        !idle.is_empty() && idle.iter().all(|&h| h == 12),
+        "idle headers {idle:?}"
+    );
+    let whole = &frames[..frames.len() - 1];
+    for f in whole {
+        assert!(f.iter().all(|&m| m == f[0]), "one frame's metadata: {f:?}");
+        assert!(
+            f[0].is_none_or(|i| i % 2 == 0),
+            "odd frames have none: {f:?}"
+        );
+    }
+    assert!(whole.iter().any(|f| f[0].is_none()) && whole.iter().any(|f| f[0] == Some(2)));
+}
+
 /// Bulk payloads read the way the host sees them: transfers of `urb` bytes, a payload ending
 /// with a short transfer (a zero-length one included) or at dwMaxPayloadTransferSize, as
 /// uvcvideo reassembles them. Returns the frames and the number of zero-length transfers.
