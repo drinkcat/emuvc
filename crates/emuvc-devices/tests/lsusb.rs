@@ -83,6 +83,31 @@ fn libuvc_cameras_parse_and_build() {
     assert_eq!(n, 5);
 }
 
+/// bNumCompressionPattern of each still image frame descriptor (VS, subtype 3) of a dump.
+fn still_compression_counts(name: &str) -> Vec<u8> {
+    let p = fixtures().join("lsusb/libuvc-cameras").join(name);
+    let cfg = parse_file(&p).unwrap()[0].descriptors.configs[0].clone();
+    let (mut pos, mut vs, mut out) = (0, false, Vec::new());
+    while pos + 2 <= cfg.len() && cfg[pos] >= 2 {
+        let d = &cfg[pos..pos + cfg[pos] as usize];
+        match d[1] {
+            4 => vs = d[5] == 0x0e && d[6] == 2,
+            0x24 if vs && d[2] == 3 => out.push(d[5 + 4 * d[4] as usize]),
+            _ => {}
+        }
+        pos += d.len();
+    }
+    out
+}
+
+/// Old lsusb printed bNumImageSizePatterns where bNumCompressionPatterns belongs (6, 9, 18 below);
+/// the bCompression values it printed, as many as bLength holds, give the real counts.
+#[test]
+fn still_frame_compression_counts() {
+    assert_eq!(still_compression_counts("ms_lifecam_show.txt"), [0, 0]);
+    assert_eq!(still_compression_counts("quickcampro9000.txt"), [1, 5]);
+}
+
 #[test]
 fn issue_dumps_parse_and_build() {
     let p = fixtures().join("lsusb/issues/67-05a3_8830.txt");

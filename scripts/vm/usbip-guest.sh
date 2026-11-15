@@ -136,8 +136,12 @@ for model in logitech-046d-0843 logitech-046d-0843-uvc15; do
   libuvc_stream 046d:0843 -f yuyv -s 640x480 -r 30 -n 30 -t 20 --max-gaps 2
   unserve
 done
-# A real camera from its lsusb -v dump: the C920 (H.264 next to YUYV).
+# Real cameras from their lsusb -v dumps: the C920 (H.264 next to YUYV), the LifeCam Show (YUYV 640x480 at
+# 15 fps only, interval 666667: libuvc finds it at 14 fps, libuvc#297) and the QuickCam Pro 9000 (a vendor
+# descriptor among the VideoControl ones, no product string: uvcvideo names it by VID:PID).
 camera logitech_hd_pro_920 C920 046d:082d 30
+camera ms_lifecam_show LifeCam 045e:0729 14
+camera quickcampro9000 046d:0809 046d:0809 30
 
 # uvcvideo as the reference for the libuvc cases that say it copes (tests/libuvc/configs).
 step "Luxvisions IR function (libuvc: api-second-function)"
