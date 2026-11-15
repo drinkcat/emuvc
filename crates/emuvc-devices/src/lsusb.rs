@@ -793,6 +793,46 @@ fn video_streaming(b: &Block) -> Result<Vec<u8>, String> {
                 .u32(b.n(&["dwBytesPerLine"]));
             push_intervals(&mut w, b);
         }
+        // H.264 payload 1.5, 3.1.1: VS_FORMAT_H264 / VS_FORMAT_H264_SIMULCAST.
+        19 | 21 => {
+            w.u8(b.n(&["bFormatIndex"]))
+                .u8(b.n(&["bNumFrameDescriptors"]))
+                .u8(b.n(&["bDefaultFrameIndex"]))
+                .u8(b.n(&["bMaxCodecConfigDelay"]))
+                .u8(b.n(&["bmSupportedSliceModes"]))
+                .u8(b.n(&["bmSupportedSyncFrameTypes"]))
+                .u8(b.n(&["bResolutionScaling"]))
+                .u8(0) // reserved, lsusb doesn't print it
+                .u8(b.n(&["bmSupportedRateControlModes"]));
+            // The 16 wMaxMBperSec* fields, in printed order.
+            for (_, v) in b
+                .fields
+                .iter()
+                .filter(|(f, _)| f.starts_with("wmaxmbpersec"))
+            {
+                w.u16(parse_num(v).unwrap_or(0));
+            }
+        }
+        // 3.1.2: VS_FRAME_H264.
+        20 => {
+            w.u8(b.n(&["bFrameIndex"]))
+                .u16(b.n(&["wWidth"]))
+                .u16(b.n(&["wHeight"]))
+                .u16(b.n(&["wSARwidth"]))
+                .u16(b.n(&["wSARheight"]))
+                .u16(b.n(&["wProfile"]))
+                .u8(b.n(&["bLevelIDC"]))
+                .u16(b.n(&["wConstrainedToolset"]))
+                .u32(b.n(&["bmSupportedUsages"]))
+                .u16(b.n(&["bmCapabilities"]))
+                .u32(b.n(&["bmSVCCapabilities"]))
+                .u32(b.n(&["bmMVCCapabilities"]))
+                .u32(b.n(&["dwMinBitRate"]))
+                .u32(b.n(&["dwMaxBitRate"]))
+                .u32(b.n(&["dwDefaultFrameInterval"]))
+                .u8(b.n(&["bNumFrameIntervals"]));
+            push_intervals(&mut w, b);
+        }
         _ => {
             return Err(b.err(&format!(
                 "unsupported VideoStreaming descriptor subtype {}",
@@ -1136,7 +1176,10 @@ fn assemble(raw: RawDevice) -> Result<Option<LsusbDevice>, String> {
                     "VideoControl Endpoint Descriptor" => vc_interrupt_endpoint(b),
                     "AudioControl Interface Descriptor" => audio_control(b)?,
                     "AudioStreaming Interface Descriptor" => audio_streaming(b)?,
-                    "AudioControl Endpoint Descriptor" => audio_endpoint(b),
+                    // Older lsusb says "AudioControl" for the AS isochronous endpoint descriptor.
+                    "AudioControl Endpoint Descriptor" | "AudioStreaming Endpoint Descriptor" => {
+                        audio_endpoint(b)
+                    }
                     "Device Firmware Upgrade Interface Descriptor" => dfu(b),
                     "HID Device Descriptor" => hid(b),
                     _ => return Err(b.err("unsupported descriptor (lsusb decodes it but it can't be rebuilt; no hex dump)")),

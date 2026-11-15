@@ -271,6 +271,7 @@ int main(int argc, char **argv) {
   if (e) {
     fprintf(stderr, "uvc_find_device: %s\n", uvc_strerror(e));
     printf("RESULT open_failed=1\n");
+    uvc_exit(ctx);
     return expect_open_fail ? 0 : 2;
   }
   uvc_device_handle_t *devh;
@@ -278,6 +279,8 @@ int main(int argc, char **argv) {
   if (e) {
     fprintf(stderr, "uvc_open: %s\n", uvc_strerror(e));
     printf("RESULT open_failed=1\n");
+    uvc_unref_device(dev); /* no leak report under ASan for a camera libuvc refuses */
+    uvc_exit(ctx);
     return expect_open_fail ? 0 : 1;
   }
   if (expect_open_fail) { fprintf(stderr, "open succeeded but --expect-open-fail given\n"); return 1; }

@@ -79,6 +79,8 @@ pub struct Descriptors {
 }
 
 struct Slot {
+    /// bConfigurationValue the function belongs to, 0 for every configuration.
+    config: u8,
     interfaces: Vec<u8>,
     func: Box<dyn Function>,
 }
@@ -131,9 +133,22 @@ impl CompositeDevice {
         }
     }
 
-    /// Registers a function owning `interfaces`.
+    /// Registers a function owning `interfaces` in every configuration.
     pub fn add_function(&mut self, interfaces: &[u8], func: Box<dyn Function>) -> &mut Self {
+        self.add_config_function(0, interfaces, func)
+    }
+
+    /// Registers a function owning `interfaces` of the configuration whose
+    /// bConfigurationValue is `config` (0: every configuration). Devices with
+    /// several configurations reuse interface numbers, each with its own function.
+    pub fn add_config_function(
+        &mut self,
+        config: u8,
+        interfaces: &[u8],
+        func: Box<dyn Function>,
+    ) -> &mut Self {
         self.slots.push(Slot {
+            config,
             interfaces: interfaces.to_vec(),
             func,
         });
@@ -143,11 +158,16 @@ impl CompositeDevice {
     /// Registers a function receiving class/vendor requests sent to the device recipient.
     pub fn set_device_function(&mut self, func: Box<dyn Function>) -> &mut Self {
         self.slots.push(Slot {
+            config: 0,
             interfaces: Vec::new(),
             func,
         });
         self.device_slot = Some(self.slots.len() - 1);
         self
+    }
+
+    pub fn set_name(&mut self, name: impl Into<String>) {
+        self.name = name.into();
     }
 
     pub fn descriptors(&self) -> &Descriptors {
@@ -170,10 +190,15 @@ impl CompositeDevice {
             .find(|v| v.header.value == self.config && self.config != 0)
     }
 
+    /// True if the slot's function belongs to the current configuration.
+    fn active(&self, s: &Slot) -> bool {
+        s.config == 0 || s.config == self.config
+    }
+
     fn slot_for_interface(&self, iface: u8) -> Option<usize> {
         self.slots
             .iter()
-            .position(|s| s.interfaces.contains(&iface))
+            .position(|s| self.active(s) && s.interfaces.contains(&iface))
     }
 
     fn rebuild_endpoints(&mut self) {
@@ -184,10 +209,7 @@ impl CompositeDevice {
                 let Some(a) = iface.alts.iter().find(|a| a.desc.alt == alt) else {
                     continue;
                 };
-                let slot = self
-                    .slots
-                    .iter()
-                    .position(|s| s.interfaces.contains(&iface.number));
+                let slot = self.slot_for_interface(iface.number);
                 for ep in &a.endpoints {
                     let info = EndpointInfo {
                         address: ep.desc.address,
@@ -489,12 +511,19 @@ impl UsbDevice for CompositeDevice {
     }
 
     fn next_wakeup(&self) -> Option<BusTime> {
-        self.slots.iter().filter_map(|s| s.func.next_wakeup()).min()
+        self.slots
+            .iter()
+            .filter(|s| self.active(s))
+            .filter_map(|s| s.func.next_wakeup())
+            .min()
     }
 
     fn tick(&mut self, cx: &mut Ctx) {
+        let config = self.config;
         for s in &mut self.slots {
-            s.func.tick(cx);
+            if s.config == 0 || s.config == config {
+                s.func.tick(cx);
+            }
         }
     }
 }

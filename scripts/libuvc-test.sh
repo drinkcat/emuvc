@@ -151,6 +151,11 @@ run_case virtual-clock pass $D $V -- -f mjpeg -s 640x480 -r 30 -n 300 -t 9
 CHECK_RE='skipped=[1-9]' run_case slow-callback pass $D -- -f mjpeg -s 640x480 -r 30 -n 20 -t 15 --cb-sleep 70
 run_case controls pass $D -- --controls
 CHECK_RE='devices: 2' run_case two-devices pass EMUVC_DEVICE=luxvisions-30c9-0052,luxvisions-30c9-0052 -- --list
+# Logitech C930e (046d:0843): libuvc only parses configuration index 0, the UVC 1.0 one here; the
+# UVC 1.5 configuration (encoding unit, H.264) must not get in the way.
+C930E=EMUVC_DEVICE=logitech-046d-0843
+run_case c930e-mjpeg pass $C930E -- -f mjpeg -s 1280x720 -r 30 -n 30 -t 15
+run_case c930e-yuyv pass $C930E -- -f yuyv -s 640x480 -r 30 -n 30 -t 15
 run_case iso-errors pass EMUVC_CONFIG="$CFG/iso-errors.toml" -- -f mjpeg -s 640x480 -r 30 -n 60 -t 20 --allow-gaps --allow-corrupt
 # The device commits dwMaxPayloadTransferSize 0: libuvc must not crash (it divided by zero before
 # libuvc#340) and falls back to the first alt setting with bandwidth. That alt is too small for the
@@ -171,6 +176,7 @@ for m in info controls convert poll still multi status async negotiate; do
   CHECK_RE="^RESULT mode=$m " run_api "api-$m" $D -- -m 500 "$m"
 done
 CHECK_RE='^RESULT mode=info ' run_api api-info-two-devices EMUVC_DEVICE=luxvisions-30c9-0052,luxvisions-30c9-0052 -- info
+CHECK_RE='^RESULT mode=wrap ' run_api api-c930e $C930E $V -- -m 1500 all
 CHECK_RE='^RESULT mode=poll ' run_api api-poll-virtual-clock $D $V -- poll
 CHECK_RE='^RESULT mode=poll ' run_api api-poll-no-eof EMUVC_CONFIG="$CFG/no-eof.toml" -- poll
 CHECK_RE='^RESULT mode=convert ' run_api api-convert-no-dht EMUVC_CONFIG="$CFG/no-dht.toml" -- convert
@@ -231,6 +237,14 @@ BUG="libuvc#348: uvc_open rejects an encoding unit (unknown VC subtype)" \
   run_api_bug api-issue-encoding-unit EMUVC_CONFIG="$CFG/issue-encoding-unit.toml" $V
 BUG="one frame descriptor's interval list overruns its bLength: libuvc rejects the whole device" \
   run_api_bug api-desc-interval-count-over EMUVC_CONFIG="$CFG/desc-interval-count-over.toml" $V
+
+# The C930e's UVC 1.5 configuration alone: a compliant UVC 1.5 camera with an encoding unit and H.264
+# on a second streaming interface. libuvc must stream YUYV from interface 1.
+C930E15=EMUVC_DEVICE=logitech-046d-0843-uvc15
+BUG="libuvc#348: uvc_open rejects the C930e's UVC 1.5 configuration (encoding unit)" \
+  run_case c930e-uvc15-yuyv bug $C930E15 -- -f yuyv -s 640x480 -r 30 -n 30 -t 15
+BUG="libuvc#348: uvc_open rejects the C930e's UVC 1.5 configuration (encoding unit)" \
+  run_api_bug api-c930e-uvc15 $C930E15 $V
 
 # Shim-level libusb failures (EMUVC_LIBUSB_FAIL): libuvc's error paths must neither crash nor hang.
 # FAULT[:mode] ; default mode is every mode in one process (lenient).

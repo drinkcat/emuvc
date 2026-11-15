@@ -61,6 +61,40 @@ check v4l2-ctl -d "$ssdev" --set-fmt-video=width=640,height=480,pixelformat=YUYV
 check "$EMUVC" check-frames -f yuyv -s 640x480 /tmp/ss.yuyv
 tail -n 4 /tmp/usbip-ss.log
 
+# Logitech C930e: the kernel takes configuration index 0, UVC 1.0 on the real camera. The -uvc15
+# variant only has the UVC 1.5 configuration (encoding unit, H.264 interface). uvcvideo must stream
+# YUYV either way.
+port=3242
+for model in logitech-046d-0843 logitech-046d-0843-uvc15; do
+  step "$model"
+  before=$(grep -l C930e /sys/class/video4linux/video*/name 2>/dev/null || true)
+  EMUVC_LOG="${EMUVC_LOG:-info}" "$EMUVC" usbip --listen 127.0.0.1:$port -d $model \
+    >/tmp/usbip-$model.log 2>&1 &
+  for i in 1 2 3 4 5 6 7 8 9 10; do
+    "$EMUVC" usbip-attach --server 127.0.0.1:$port 1-1 && break
+    sleep 0.2
+  done
+  port=$((port + 1))
+  cdev=
+  for i in $(seq 100); do
+    for n in /sys/class/video4linux/video*; do
+      grep -q C930e "$n/name" 2>/dev/null && ! echo "$before" | grep -qx "$n/name" &&
+        [ -z "$cdev" ] && cdev=/dev/$(basename "$n")
+    done
+    [ -n "$cdev" ] && break
+    sleep 0.1
+  done
+  check test -n "$cdev"
+  grep -l 0843 /sys/bus/usb/devices/*/idProduct | while read -r f; do
+    echo "$(dirname "$f"): bConfigurationValue $(cat "$(dirname "$f")/bConfigurationValue")"
+  done
+  v4l2-ctl -d "$cdev" --list-formats
+  dmesg | grep -i "C930e\|0843" | tail -n 4
+  check v4l2-ctl -d "$cdev" --set-fmt-video=width=640,height=480,pixelformat=YUYV \
+    --stream-mmap=4 --stream-count=30 --stream-to=/tmp/c930e.yuyv
+  check "$EMUVC" check-frames -f yuyv -s 640x480 /tmp/c930e.yuyv
+done
+
 step "emuvc log (tail)"
 tail -n 12 /tmp/usbip.log
 dmesg | grep -iE 'error|fail|warn' | grep -v -iE 'acpi|firmware|pci|i8042|rtc' | tail -10

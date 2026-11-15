@@ -11,7 +11,9 @@ stamped test frames, status interrupts — plus configurable faults (USB errors,
 stalls, timeouts, disconnects, UVC quirks).
 
 The first model is a laptop webcam (Luxvisions 30c9:0052: UVC 1.5, MJPEG and
-YUY2 up to 1080p plus an IR function), reproduced byte for byte.
+YUY2 up to 1080p plus an IR function), reproduced byte for byte. The Logitech
+C930e (046d:0843) has two configurations, UVC 1.0 and UVC 1.5 with an H.264
+encoding unit. `logitech-046d-0843-uvc15` keeps only the UVC 1.5 one.
 
 ## Quick start
 
