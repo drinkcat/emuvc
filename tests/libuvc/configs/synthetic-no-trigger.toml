@@ -1,0 +1,4 @@
+# Synthetic camera with still method 2 but no hardware trigger (bTriggerSupport 0).
+[[device]]
+model = "synthetic"
+synthetic = { trigger = false }

@@ -1,0 +1,8 @@
+# The camera is unplugged by the first SET_INTERFACE to alt 0: libuvc sends it to release a streaming
+# interface (uvc_release_if), at close.
+[[device]]
+model = "luxvisions-30c9-0052"
+
+[[device.fault]]
+on = { control = { request_type = 0x01, request = 0x0b, value = 0 } }
+action = "disconnect"

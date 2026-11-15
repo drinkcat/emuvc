@@ -463,6 +463,123 @@ fn clock_quirks() {
     assert!(deltas.contains(&0), "a PTS one interval back: {deltas:?}");
 }
 
+/// Payloads of a bulk YUYV stream (one per transfer) from a synthetic camera with `quirks`.
+fn bulk_payloads(quirks: emuvc_uvc::stream::StreamQuirks, n: usize) -> Vec<Vec<u8>> {
+    let mut cfg = synthetic(SyntheticConfig {
+        transfer: "bulk".into(),
+        ..Default::default()
+    });
+    cfg.uvc = quirks;
+    let host = host();
+    let info = host.attach(build(&cfg).unwrap()).unwrap();
+    let view = ConfigView::parse(&info.configs[0]).unwrap();
+    let vs = &parse_function(&view, 0, info.speed).unwrap().streaming[0];
+    probe_commit(&host, info.id, vs.interface, 2, 1, 333_333, 48).unwrap();
+    (0..n)
+        .map(|_| {
+            host.transfer(Urb::bulk_in(info.id, vs.endpoint, 64 * 1024))
+                .data
+        })
+        .collect()
+}
+
+/// Payload framing quirks: EOF in a header-only payload, ERR on one payload in the middle
+/// of each frame, a bogus bHeaderLength of 1.
+#[test]
+fn payload_framing_quirks() {
+    use emuvc_uvc::stream::StreamQuirks;
+    let p = bulk_payloads(
+        StreamQuirks {
+            eof_payload: true,
+            ..Default::default()
+        },
+        80,
+    );
+    let eofs: Vec<&Vec<u8>> = p.iter().filter(|p| p[1] & HDR_EOF != 0).collect();
+    assert!(eofs.len() >= 2, "frames end");
+    assert!(
+        eofs.iter().all(|p| p.len() == p[0] as usize),
+        "EOF payloads carry no data"
+    );
+
+    let p = bulk_payloads(
+        StreamQuirks {
+            err_payload: Some(1),
+            ..Default::default()
+        },
+        80,
+    );
+    let (mut errs, mut frames) = (0, 0);
+    for p in &p {
+        errs += (p[1] & HDR_ERR != 0) as u32;
+        if p[1] & HDR_EOF != 0 {
+            assert_eq!(errs, 1, "one ERR payload in frame {frames}");
+            (errs, frames) = (0, frames + 1);
+        }
+    }
+    assert!(frames >= 2, "frames end");
+
+    let p = bulk_payloads(
+        StreamQuirks {
+            header_len: Some(1),
+            ..Default::default()
+        },
+        4,
+    );
+    assert!(
+        p.iter().all(|p| p[0] == 1 && p.len() > 1),
+        "bHeaderLength 1, then data"
+    );
+}
+
+/// Probe quirks: class requests stall until a SET_INTERFACE (XBox Live Vision); SET_CUR(PROBE)
+/// stalls with dwMaxVideoFrameSize 0 (UVC_QUIRK_PROBE_EXTRAFIELDS).
+#[test]
+fn probe_quirks() {
+    use emuvc_uvc::stream::{StreamQuirks, StreamingControl};
+    let attach = |quirks: StreamQuirks| {
+        let mut cfg = synthetic(SyntheticConfig::default());
+        cfg.uvc = quirks;
+        let host = host();
+        let info = host.attach(build(&cfg).unwrap()).unwrap();
+        let view = ConfigView::parse(&info.configs[0]).unwrap();
+        let iface = parse_function(&view, 0, info.speed).unwrap().streaming[0].interface;
+        (host, info.id, iface)
+    };
+    let probe = |frame_size: u32| {
+        StreamingControl {
+            hint: 1,
+            format_index: 1,
+            frame_index: 1,
+            frame_interval: 333_333,
+            max_video_frame_size: frame_size,
+            ..Default::default()
+        }
+        .to_bytes(48)
+    };
+
+    let (host, dev, iface) = attach(StreamQuirks {
+        need_set_interface: true,
+        ..Default::default()
+    });
+    assert!(uvc_set(&host, dev, VS_PROBE_CONTROL, iface, &probe(0)).is_err());
+    host.control(
+        dev,
+        SetupPacket::new(0x01, 0x0b, 0, iface as u16, 0), // SET_INTERFACE alt 0
+        &[],
+        None,
+    )
+    .unwrap();
+    assert!(uvc_set(&host, dev, VS_PROBE_CONTROL, iface, &probe(0)).is_ok());
+
+    let (host, dev, iface) = attach(StreamQuirks {
+        strict_probe_fields: true,
+        ..Default::default()
+    });
+    assert!(uvc_set(&host, dev, VS_PROBE_CONTROL, iface, &probe(0)).is_err());
+    assert!(uvc_set(&host, dev, VS_PROBE_CONTROL, iface, &probe(614_400)).is_ok());
+}
+
 fn vc_req(
     host: &Host,
     dev: DeviceId,

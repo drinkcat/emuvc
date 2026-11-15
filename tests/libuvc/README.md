@@ -57,7 +57,9 @@ Runs libuvc (built out of tree, never modified) against the emuvc libusb shim
 `api_test [-d VID:PID] [-n INDEX] [-m MS] [-l] MODE...` exercises libuvc's public API
 (modes: `info controls convert poll still multi status async negotiate wrap open`, or `all`;
 `open` only lists, finds and opens the device, and prints the outcome for the descriptor cases; with
-`-x` it leaves the device open for `uvc_exit()` to close). It discovers
+`-x` it leaves the device open for `uvc_exit()` to close; `absent`, not part of `all`, calls the typed
+controls of the units the device lacks, which must fail cleanly; `soak`, not part of `all` either,
+opens, streams, stops and closes 20 times in one context). It discovers
 what the device offers through libuvc itself (formats, units, extension units, still
 patterns, streaming interfaces), so richer emulated devices raise coverage without code
 changes. Calls a device cannot serve are counted as "soft"; failures are crashes/hangs
@@ -68,7 +70,8 @@ out of range (0x04) outside GET_MIN/GET_MAX, invalid value within range (0x08) o
 grid, and wrong state (0x02) while an auto mode disables the control. It also checks that auto
 switches (focus, white balance, hue, contrast, every AE mode in GET_RES) disable and re-enable
 their manual controls. With the auto modes off, the typed setters (`uvc_set_exposure_abs`, ...) must
-accept the current value of their control. Extension unit controls must honour GET_INFO: without D0 or D1, GET_CUR or
+accept the current value of their control. Typed getters must return 0 or a negative error code
+for GET_CUR/MIN/MAX/RES/DEF, never a byte count, even with `-l` (a short reply must not look like neither). Extension unit controls must honour GET_INFO: without D0 or D1, GET_CUR or
 SET_CUR STALLs with "invalid request". A SET_CUR whose length isn't GET_LEN must also STALL.
 `configs/synthetic-xu.toml` reshapes them with `[[device.control]]`. The VC power mode control, if
 present, accepts mode 0, accepts mode 1 only when D4 says it is supported, rejects reserved modes

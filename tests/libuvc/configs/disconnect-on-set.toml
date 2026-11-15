@@ -1,0 +1,7 @@
+# The camera is unplugged by a SET_CUR of the processing unit's brightness (synthetic unit 3).
+[[device]]
+model = "synthetic"
+
+[[device.fault]]
+on = { control = { request_type = 0x21, request = 0x01, selector = 0x02, entity = 3 } }
+action = "disconnect"

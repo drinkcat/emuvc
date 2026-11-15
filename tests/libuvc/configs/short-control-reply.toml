@@ -1,0 +1,8 @@
+# GET_CUR of the processing unit's brightness (2 bytes) replies with 1 byte. A host must treat the
+# short reply as an error; libuvc's typed getters return the byte count instead.
+[[device]]
+model = "synthetic"
+
+[[device.fault]]
+on = { control = { request = 0x81, selector = 0x02, entity = 3 } }  # GET_CUR, PU_BRIGHTNESS, unit 3
+action = { truncate = 1 }

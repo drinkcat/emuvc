@@ -1,0 +1,4 @@
+# Synthetic camera with four VideoStreaming interfaces (the generator's maximum) in one function.
+[[device]]
+model = "synthetic"
+synthetic = { streams = 4, formats = ["mjpeg", "yuyv"], sizes = [[320, 240], [160, 120]] }

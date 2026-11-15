@@ -1,0 +1,5 @@
+# Neither EOF nor an FID toggle: MJPEG frames can only be told apart by their SOI markers. uvcvideo
+# does that for the cameras listed with UVC_QUIRK_MJPEG_NO_EOF (e.g. Sonix 0c45:6366).
+[[device]]
+model = "luxvisions-30c9-0052"
+uvc = { no_eof = true, no_fid_toggle = true }

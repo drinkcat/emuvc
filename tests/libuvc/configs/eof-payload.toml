@@ -1,0 +1,5 @@
+# Each frame's EOF comes in a header-only payload after its last data payload (UVC 1.5 2.4.3.3
+# doesn't forbid it; uvcvideo handles "EOF in empty payload"). The FID still toggles.
+[[device]]
+model = "luxvisions-30c9-0052"
+uvc = { eof_payload = true }

@@ -1,0 +1,5 @@
+# SET_CUR(PROBE) stalls when dwMaxVideoFrameSize is 0 (Aveo 1871:0306, Ecamm 18cd:cafe; uvcvideo's
+# UVC_QUIRK_PROBE_EXTRAFIELDS). libuvc probes with GET_MAX's values, so it never sends a 0.
+[[device]]
+model = "luxvisions-30c9-0052"
+uvc = { strict_probe_fields = true }

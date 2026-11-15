@@ -168,6 +168,16 @@ run_case pts-first-only-mjpeg pass EMUVC_CONFIG="$CFG/pts-first-only.toml" -- -f
 run_case clock-wrap-jitter pass EMUVC_CONFIG="$CFG/clock-wrap-jitter.toml" -- -f mjpeg -s 1280x720 -r 30 -n 60 -t 15
 # 243 bytes of metadata in every payload header: frames intact, metadata bounded.
 run_case header-255 pass EMUVC_CONFIG="$CFG/header-255.toml" -- -f yuyv -s 640x480 -r 30 -n 30 -t 15
+# EOF in a header-only payload after each frame's data (the FID still toggles): frames intact.
+run_case eof-payload pass EMUVC_CONFIG="$CFG/eof-payload.toml" -- -f yuyv -s 640x480 -r 30 -n 30 -t 15
+BUG="EOF in a header-only payload is ignored (checked only when the payload has data): without an FID toggle, MJPEG frames never end" \
+  run_case eof-payload-no-fid bug EMUVC_CONFIG="$CFG/eof-payload-no-fid.toml" -- -f mjpeg -s 640x480 -r 30 -n 30 -t 15
+# ERR on one payload in the middle of every 3rd frame: those frames may be dropped, not delivered with a hole.
+BUG="ERR on one payload: libuvc drops that payload only, and delivers the frame with a hole" \
+  run_case err-payload bug EMUVC_CONFIG="$CFG/err-payload.toml" -- -f yuyv -s 640x480 -r 30 -n 30 -t 20 --allow-gaps
+# libuvc #270: SuperSpeed isochronous alternate settings carry bursts (wBytesPerInterval above 1024):
+# libuvc must size them from the endpoint companion descriptor and pick the 4096-byte one.
+CHECK_RE='start streaming .* 4096 bytes/payload' run_case ss-burst pass EMUVC_CONFIG="$CFG/synthetic-iso-ss.toml" -- -f yuyv -s 640x480 -r 30 -n 30 -t 15
 # GET_DEF(brightness) stalls: libuvc must report PIPE for it (a failed check, so stream_test exits 1).
 EXPECT_RC=1 CHECK_RE='FAIL brightness GET_DEF = .*\(Pipe\)' run_case stall-get-def pass EMUVC_CONFIG="$CFG/stall-get-def.toml" -- --controls
 
@@ -180,17 +190,20 @@ done
 CHECK_RE='^RESULT mode=info ' run_api api-info-two-devices EMUVC_DEVICE=luxvisions-30c9-0052,luxvisions-30c9-0052 -- info
 CHECK_RE='^RESULT mode=wrap ' run_api api-c930e $C930E $V -- -m 1500 all
 CHECK_RE='^RESULT mode=poll ' run_api api-poll-virtual-clock $D $V -- poll
+# libuvc #267: polling uvc_stream_get_frame() at 260 fps, in real time, must not time out.
+CHECK_RE='^RESULT mode=poll ' run_api api-issue-267-elp-260fps EMUVC_CONFIG="$CFG/issue-267-elp-260fps.toml" -- poll
 CHECK_RE='^RESULT mode=poll ' run_api api-poll-no-eof EMUVC_CONFIG="$CFG/no-eof.toml" -- poll
 CHECK_RE='^RESULT mode=convert ' run_api api-convert-no-dht EMUVC_CONFIG="$CFG/no-dht.toml" -- convert
 
 # Quirky-but-working devices: the API must behave as on the default device (strict).
-for c in header-6 header-long header-255 idle-zlp probe-len-26 probe-no-frame-size startup-delay no-fid-toggle pts-first-only \
+for c in header-6 header-long header-255 eof-payload probe-extra-fields idle-zlp probe-len-26 probe-no-frame-size startup-delay no-fid-toggle pts-first-only \
          clock-wrap-jitter; do
   CHECK_RE='^RESULT mode=poll ' run_api "api-poll-$c" EMUVC_CONFIG="$CFG/$c.toml" -- poll negotiate
 done
 # Misbehaving devices: -l counts failed expectations as soft; crashes and hangs still fail.
-for c in err-bit drop-truncate header-2 header-lie header-lie-scr probe-len-34-strict ignore-format iso-faults disconnect \
-         bogus-header bulk-faults probe-small-frame-size probe-bogus-frame; do
+for c in err-bit drop-truncate header-2 header-lie header-lie-scr header-len-0 header-len-1 mjpeg-no-eof-no-fid \
+         probe-len-34-strict ignore-format iso-faults disconnect bogus-header bulk-faults probe-small-frame-size \
+         probe-bogus-frame probe-no-frame-size-h264; do
   CHECK_RE='^RESULT mode=negotiate ' run_api "api-fault-$c" EMUVC_CONFIG="$CFG/$c.toml" -- -l poll still status negotiate
 done
 
@@ -250,6 +263,26 @@ BUG="probe reply with dwMaxPayloadTransferSize 0xffff0400: no alternate setting 
 BUG="probe reply with bFormatIndex/bFrameIndex 0: libuvc can't stream" \
   CHECK_RE='^RESULT mode=poll ' TEST_BIN=api_test run_case api-probe-zero-index bug EMUVC_CONFIG="$CFG/probe-zero-index.toml" -- poll
 
+# A short control reply (GET_CUR(brightness) truncated to 1 byte): typed getters must fail. With -l only
+# that rule stays strict (api_test's typed_rc), the rest of the controls mode is lenient.
+BUG="typed getters return a short reply's byte count, neither success nor an error code, out parameter unset" \
+  CHECK_RE='^RESULT mode=controls ' TEST_BIN=api_test run_case api-short-control-reply bug EMUVC_CONFIG="$CFG/short-control-reply.toml" $V -- -l controls
+# The typed controls of a unit the camera lacks must fail, not dereference the missing unit.
+BUG="libuvc#85: uvc_get_input_select() dereferences uvc_get_selector_units(), NULL without a selector unit" BUG_CRASH=1 \
+  CHECK_RE='^RESULT mode=absent ' TEST_BIN=api_test run_case api-absent-selector-unit bug EMUVC_CONFIG="$CFG/synthetic-no-selector.toml" $V -- absent
+BUG="libuvc#85: processing unit controls dereference uvc_get_processing_units(), NULL without one" BUG_CRASH=1 \
+  CHECK_RE='^RESULT mode=absent ' TEST_BIN=api_test run_case api-absent-processing-unit bug EMUVC_CONFIG="$CFG/desc-no-processing-unit.toml" $V -- absent
+
+# Frame intervals: a 0 among the discrete intervals, and 24 fps written as 416667 (libuvc#297).
+BUG="a 0 in a discrete interval list ends libuvc's zero-terminated copy: the intervals after it are lost" \
+  CHECK_RE='^RESULT mode=info ' TEST_BIN=api_test run_case api-desc-zero-interval bug EMUVC_CONFIG="$CFG/desc-zero-interval.toml" $V -- info
+BUG="libuvc#297: uvc_get_stream_ctrl_format_size() truncates 10000000 / interval, so 416667 (24 fps) isn't found at 24 fps" \
+  CHECK_RE='^RESULT mode=negotiate ' TEST_BIN=api_test run_case api-issue-297-24fps bug EMUVC_CONFIG="$CFG/issue-297-24fps.toml" $V -- negotiate
+
+# A camera that needs a SET_INTERFACE before any class request (XBox Live Vision): libuvc must stream.
+BUG="libuvc probes before sending any SET_INTERFACE (uvcvideo's uvc_video_init selects alt 0 first): the XBox Live Vision camera stalls" \
+  CHECK_RE='^RESULT mode=poll ' TEST_BIN=api_test run_case api-need-set-interface bug EMUVC_CONFIG="$CFG/need-set-interface.toml" -- poll
+
 # Asynchronous controls (UVC 1.5 2.4.4): completions and a Control Failure Change reach the status callback.
 CHECK_RE='async_ok=[2-9] async_failed=1' run_api api-async-completion EMUVC_CONFIG="$CFG/synthetic-async.toml" -- async
 # Status packets at the edges of 2.4.2.2: malformed ones are dropped, well-formed ones still arrive.
@@ -278,7 +311,8 @@ CHECK_RE='uvc_set_power_mode\(UVC_VC_VIDEO_POWER_MODE_FULL\) writes 0x00: Succes
   TEST_BIN=api_test run_case api-power-mode-enum pass EMUVC_CONFIG="$CFG/synthetic-default.toml" -- controls
 
 # Issue reproductions (configs/issue-*.toml) libuvc handles now: all modes, strict.
-for c in issue-193-zero-packet-alt issue-276-get-max-zero-payload issue-282-payload-changes issue-336-step-zero; do
+for c in issue-193-zero-packet-alt issue-276-get-max-zero-payload issue-282-payload-changes issue-282-larger-payload \
+         issue-336-step-zero; do
   CHECK_RE='^RESULT mode=wrap ' run_api "api-$c" EMUVC_CONFIG="$CFG/$c.toml" $V -- -m 1500 all
 done
 
@@ -296,6 +330,16 @@ run_api_robust() { # NAME [VAR=val ...]
 for c in issue-1-probe-stall issue-strict-probe-len issue-garbage-first-frames; do
   run_api_robust "api-$c" EMUVC_CONFIG="$CFG/$c.toml" $V
 done
+
+# Unplugged mid-operation (libuvc#152, #53, #16, #146): during a control SET_CUR, and when libuvc selects
+# alt 0 to release a streaming interface at close. libuvc may fail, but cleanly (and without leaks under ASan).
+CHECK_RE='^RESULT mode=controls ' TEST_BIN=api_test run_case api-disconnect-on-set robust EMUVC_CONFIG="$CFG/disconnect-on-set.toml" $V -- -l controls
+CHECK_RE='^RESULT mode=poll ' TEST_BIN=api_test run_case api-disconnect-on-close robust EMUVC_CONFIG="$CFG/disconnect-on-close.toml" -- -l poll
+# Open, stream, stop and close, 20 rounds in one context. libuvc stops its event thread when the last
+# device closes, and never resets kill_handler_thread: after a reopen the new event thread exits at once,
+# the streams get no data and uvc_stop_streaming() waits forever. The hang is the bug (BUG_CRASH).
+BUG="libuvc#227, #261: uvc_close() of the last device sets kill_handler_thread and nothing resets it, so after a reopen no events are handled: streams get no data, uvc_stop_streaming() hangs" BUG_CRASH=1 \
+  CHECK_RE='^RESULT mode=soak ' TEST_BIN=api_test run_case api-soak bug EMUVC_CONFIG="$CFG/synthetic-default.toml" $V -- soak
 
 # Known libuvc bugs (bug): the expected behaviour, XFAIL until libuvc is fixed.
 run_api_bug() { # NAME [VAR=val ...]: all modes, strict
@@ -326,7 +370,7 @@ for f in get_config_descriptor=io get_active_config_descriptor=io open=access \
          get_device_list=io release_interface=not_found release_interface=io \
          detach_kernel_driver=not_found detach_kernel_driver=not_supported \
          control_transfer=pipe@5 control_transfer=pipe@20-60 control_transfer=io@3 \
-         get_string_descriptor_ascii=io init_context=no_mem set_configuration=io wrap_sys_device=io; do
+         get_string_descriptor_ascii=io init_context=no_mem set_configuration=io wrap_sys_device=io open=no_device; do
   m=all; [[ $f == *:* ]] && m=${f##*:} && f=${f%:*}
   CHECK_RE='^RESULT mode=' run_api "api-shimfail-${f//[^a-z_0-9=-]/_}" $D $V "EMUVC_LIBUSB_FAIL=$f" -- -l "$m"
 done

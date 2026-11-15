@@ -1,0 +1,6 @@
+# EOF in a header-only payload, and FID never toggles: EOF is the only frame boundary. Hosts that
+# look at EOF only in payloads with data never see a frame end (for uncompressed formats, a full
+# frame buffer still ends one; MJPEG frames have no fixed size).
+[[device]]
+model = "luxvisions-30c9-0052"
+uvc = { eof_payload = true, no_fid_toggle = true }
