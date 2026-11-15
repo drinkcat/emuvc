@@ -1422,6 +1422,25 @@ static void mode_negotiate(void) {
   if (fr) {
     uvc_stream_ctrl_t c;
     expect(ctrl_for(f, fr, default_interval(fr), &c) == UVC_SUCCESS, "probe valid request");
+    /* The probe control's requests (UVC 1.5 table 4-76): GET_INFO is GET|SET, GET_LEN a probe length,
+     * GET_MIN/MAX/DEF/RES answer, and the negotiated frame interval lies within MIN and MAX. */
+    {
+      uint8_t b[2] = {0};
+      int r = libusb_control_transfer(devh->usb_devh, 0xa1, UVC_GET_INFO, UVC_VS_PROBE_CONTROL << 8, c.bInterfaceNumber, b, 1, 0);
+      expect(r == 1 && b[0] == 0x03, "probe GET_INFO is GET|SET (%d bytes, 0x%02x)", r, b[0]);
+      r = libusb_control_transfer(devh->usb_devh, 0xa1, UVC_GET_LEN, UVC_VS_PROBE_CONTROL << 8, c.bInterfaceNumber, b, 2, 0);
+      int plen = b[0] | b[1] << 8;
+      expect(r == 2 && (plen == 26 || plen == 34 || plen == 48), "probe GET_LEN is a probe length (%d bytes, %d)", r, plen);
+      static const enum uvc_req_code RQ[] = {UVC_GET_MIN, UVC_GET_MAX, UVC_GET_DEF, UVC_GET_RES};
+      static const char *const RN[] = {"GET_MIN", "GET_MAX", "GET_DEF", "GET_RES"};
+      uvc_stream_ctrl_t q[4];
+      for (int i = 0; i < 4; i++) {
+        q[i] = c;
+        expect(uvc_query_stream_ctrl(devh, &q[i], 1, RQ[i]) == UVC_SUCCESS, "probe %s", RN[i]);
+      }
+      expect(q[0].dwFrameInterval <= c.dwFrameInterval && c.dwFrameInterval <= q[1].dwFrameInterval,
+             "probe interval MIN %u <= CUR %u <= MAX %u", q[0].dwFrameInterval, c.dwFrameInterval, q[1].dwFrameInterval);
+    }
     uvc_stream_ctrl_t p = c; p.bFormatIndex = 0xee;
     expect(uvc_probe_stream_ctrl(devh, &p) == UVC_ERROR_INVALID_MODE, "probe unknown format index");
     p = c; p.bFrameIndex = 0xee;

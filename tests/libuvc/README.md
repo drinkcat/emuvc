@@ -76,7 +76,9 @@ for GET_CUR/MIN/MAX/RES/DEF, never a byte count, even with `-l` (a short reply m
 SET_CUR STALLs with "invalid request". A SET_CUR whose length isn't GET_LEN must also STALL.
 `configs/synthetic-xu.toml` reshapes them with `[[device.control]]`. The VC power mode control, if
 present, accepts mode 0, accepts mode 1 only when D4 says it is supported, rejects reserved modes
-and keeps its read-only bits. `still` checks that a method 2 trigger yields exactly one frame of the
+and keeps its read-only bits. `negotiate` also checks the probe control's requests (UVC 1.5 table 4-76): GET_INFO is 0x03, GET_LEN a
+probe length (26, 34 or 48), GET_MIN/MAX/DEF/RES answer, and the negotiated frame interval lies within
+GET_MIN and GET_MAX. `still` checks that a method 2 trigger yields exactly one frame of the
 still size before video frames resume.
 `async` sets every asynchronous camera terminal or processing unit control (GET_INFO D4) and
 expects the UVC 1.5 2.4.4 flow. The SET_CUR is accepted at once, and GET_CUR/SET_CUR on that

@@ -713,6 +713,26 @@ impl VsInterface {
                     },
                 ))
             }
+            (VS_PROBE_CONTROL, GET_RES) => {
+                // UVC 1.5 table 4-76: the resolution of each supported field, for the current
+                // format and frame. Only the frame interval and the quality vary in steps.
+                let step = self
+                    .desc
+                    .format(self.probe.format_index)
+                    .and_then(|f| f.frame(self.probe.frame_index))
+                    .map_or(0, |fr| match &fr.intervals {
+                        crate::topology::Intervals::Continuous { step, .. } => *step,
+                        crate::topology::Intervals::Discrete(_) => 0,
+                    });
+                let c = StreamingControl {
+                    format_index: self.probe.format_index,
+                    frame_index: self.probe.frame_index,
+                    frame_interval: step,
+                    comp_quality: 1,
+                    ..Default::default()
+                };
+                Ok(c.to_bytes(self.probe_len()))
+            }
             (VS_PROBE_CONTROL | VS_COMMIT_CONTROL, GET_LEN) => {
                 Ok((self.probe_len() as u16).to_le_bytes().to_vec())
             }
