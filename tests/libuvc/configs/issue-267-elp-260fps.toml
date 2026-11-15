@@ -1,0 +1,6 @@
+# libuvc #267: the ELP 32e4:4689 (USBFHD08S-L36) as libuvc printed it in the issue: UVC 1.0, high
+# speed, MJPEG 640x360 at 260 fps (dwFrameInterval 38461), 1280x720 and 1920x1080. The report:
+# uvc_stream_get_frame() timed out at 260 fps.
+[[device]]
+model = "synthetic"
+synthetic = { vendor_id = 0x32e4, product_id = 0x4689, uvc = "1.0", formats = ["mjpeg"], sizes = [[640, 360], [1280, 720], [1920, 1080]], fps = [260] }

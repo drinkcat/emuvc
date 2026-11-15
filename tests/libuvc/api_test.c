@@ -899,6 +899,18 @@ static void mode_convert(void) {
 static volatile int cb_frames;
 static void count_cb(uvc_frame_t *f, void *p) { (void)p; if (f && f->data_bytes) cb_frames++; }
 
+/* Polls uvc_stream_get_frame until poll_run is cleared, for "stop while another thread waits". */
+static uvc_stream_handle_t *poll_strm;
+static volatile int poll_run, poll_frames;
+static void *poll_thread(void *p) {
+  (void)p;
+  while (poll_run) {
+    uvc_frame_t *f = NULL;
+    if (uvc_stream_get_frame(poll_strm, &f, 100000) == UVC_SUCCESS && f) poll_frames++;
+  }
+  return NULL;
+}
+
 static void mode_poll(void) {
   expect(open_device() == 0, "open device");
   if (!devh) return;
@@ -966,6 +978,21 @@ static void mode_poll(void) {
   expect(cb_frames >= 1, "uvc_start_iso_streaming frames: %d", cb_frames);
   uvc_stop_streaming(devh);
   uvc_stop_streaming(devh); /* idempotent */
+  /* stop from one thread while another waits in uvc_stream_get_frame (libuvc #296) */
+  uvc_stream_handle_t *ps;
+  if (soft(uvc_stream_open_ctrl(devh, &ps, &c)) >= 0) {
+    if (soft(uvc_stream_start(ps, NULL, NULL, 0)) >= 0) {
+      pthread_t t;
+      poll_strm = ps; poll_run = 1; poll_frames = 0;
+      pthread_create(&t, NULL, poll_thread, NULL);
+      usleep(100000);
+      expect(uvc_stream_stop(ps) == UVC_SUCCESS, "stop while another thread waits for a frame");
+      poll_run = 0;
+      pthread_join(t, NULL);
+      printf("  stop while polling: %d frames polled\n", poll_frames);
+    }
+    uvc_stream_close(ps);
+  }
   /* close the device with a stream still open and running */
   uvc_stream_handle_t *s;
   if (uvc_stream_open_ctrl(devh, &s, &c) == UVC_SUCCESS) { soft(uvc_stream_start(s, count_cb, NULL, 0)); usleep(100000); }
