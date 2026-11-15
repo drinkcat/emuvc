@@ -48,6 +48,9 @@ pub struct SyntheticConfig {
     pub sizes: Vec<(u16, u16)>,
     /// Frame rates of every frame descriptor, highest first.
     pub fps: Vec<u32>,
+    /// Discrete frame intervals in 100 ns units, instead of `fps` (e.g. 416667 for 24 fps,
+    /// 417083 for 23.976 fps).
+    pub intervals: Vec<u32>,
     /// Continuous frame intervals (from the highest to the lowest fps).
     pub continuous: bool,
     /// dwFrameIntervalStep override for continuous intervals (0 is a classic bug).
@@ -83,6 +86,7 @@ impl Default for SyntheticConfig {
                 .to_vec(),
             sizes: vec![(640, 480), (320, 240), (160, 120)],
             fps: vec![30, 15, 5],
+            intervals: Vec::new(),
             continuous: false,
             interval_step: None,
             streams: 1,
@@ -147,12 +151,15 @@ fn control_mask(selector: fn(u32) -> Option<u8>, bits: u32, skip: &[u8]) -> u32 
 
 fn frames(cfg: &SyntheticConfig, fmt: &Fmt) -> Vec<VsFrame> {
     let intervals: Vec<u32> = {
-        let mut v: Vec<u32> = cfg
-            .fps
-            .iter()
-            .filter(|&&f| f > 0)
-            .map(|&f| 10_000_000 / f)
-            .collect();
+        let mut v: Vec<u32> = if cfg.intervals.is_empty() {
+            cfg.fps
+                .iter()
+                .filter(|&&f| f > 0)
+                .map(|&f| 10_000_000 / f)
+                .collect()
+        } else {
+            cfg.intervals.iter().copied().filter(|&i| i > 0).collect()
+        };
         v.sort_unstable();
         v.dedup();
         if v.is_empty() { vec![333_333] } else { v }

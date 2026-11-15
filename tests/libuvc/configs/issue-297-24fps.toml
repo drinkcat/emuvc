@@ -1,0 +1,6 @@
+# libuvc #297: frame intervals 333333 (30 fps), 416667 (24 fps, as many cameras round it) and
+# 417083 (23.976 fps). 10000000 / 416667 is 23 in integer arithmetic, so asking for 24 fps finds no
+# interval.
+[[device]]
+model = "synthetic"
+synthetic = { intervals = [333333, 416667, 417083] }

@@ -1,0 +1,8 @@
+# Synthetic camera whose first MJPEG frame descriptor lists a 0 as its second of three discrete
+# intervals (uvcvideo maps 0 to 1). The entries after the 0 must not get lost.
+[[device]]
+model = "synthetic"
+
+[[device.patch]]
+target = { iface = "vs", subtype = 0x07 }        # first VS_FRAME_MJPEG
+set = [[30, 0], [31, 0], [32, 0], [33, 0]]       # dwFrameInterval(2)

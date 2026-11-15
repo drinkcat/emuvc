@@ -273,6 +273,12 @@ BUG="libuvc#85: uvc_get_input_select() dereferences uvc_get_selector_units(), NU
 BUG="libuvc#85: processing unit controls dereference uvc_get_processing_units(), NULL without one" BUG_CRASH=1 \
   CHECK_RE='^RESULT mode=absent ' TEST_BIN=api_test run_case api-absent-processing-unit bug EMUVC_CONFIG="$CFG/desc-no-processing-unit.toml" $V -- absent
 
+# Frame intervals: a 0 among the discrete intervals, and 24 fps written as 416667 (libuvc#297).
+BUG="a 0 in a discrete interval list ends libuvc's zero-terminated copy: the intervals after it are lost" \
+  CHECK_RE='^RESULT mode=info ' TEST_BIN=api_test run_case api-desc-zero-interval bug EMUVC_CONFIG="$CFG/desc-zero-interval.toml" $V -- info
+BUG="libuvc#297: uvc_get_stream_ctrl_format_size() truncates 10000000 / interval, so 416667 (24 fps) isn't found at 24 fps" \
+  CHECK_RE='^RESULT mode=negotiate ' TEST_BIN=api_test run_case api-issue-297-24fps bug EMUVC_CONFIG="$CFG/issue-297-24fps.toml" $V -- negotiate
+
 # Asynchronous controls (UVC 1.5 2.4.4): completions and a Control Failure Change reach the status callback.
 CHECK_RE='async_ok=[2-9] async_failed=1' run_api api-async-completion EMUVC_CONFIG="$CFG/synthetic-async.toml" -- async
 # Status packets at the edges of 2.4.2.2: malformed ones are dropped, well-formed ones still arrive.

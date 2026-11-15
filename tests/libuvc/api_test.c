@@ -1311,6 +1311,14 @@ static void mode_negotiate(void) {
       if (fr->intervals) {
         for (const uint32_t *iv = fr->intervals; *iv; iv++) {
           int fps = 10000000 / *iv;
+          /* A rate within 0.01 of an integer negotiates at that integer (libuvc#297: 416667 is 24 fps,
+           * which 10000000 / 416667 = 23 misses). */
+          double exact = 10000000.0 / *iv, off = exact - (int)(exact + 0.5);
+          if ((int)(exact + 0.5) != fps && off > -0.01 && off < 0.01) {
+            uvc_error_t e2 = uvc_get_stream_ctrl_format_size(devh, &c, ff, fr->wWidth, fr->wHeight, (int)(exact + 0.5));
+            expect(e2 == UVC_SUCCESS, "%ux%u: interval %u (%.3f fps) at %d fps: %s", fr->wWidth, fr->wHeight, *iv, exact,
+                   (int)(exact + 0.5), uvc_strerror(e2));
+          }
           combos++;
           uvc_error_t e = uvc_get_stream_ctrl_format_size(devh, &c, ff, fr->wWidth, fr->wHeight, fps);
           if (e == UVC_SUCCESS) {
