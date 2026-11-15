@@ -39,6 +39,14 @@ static void expect(int cond, const char *fmt, ...) {
   else { n_fail++; printf("  FAIL [%s] ", cur_mode); vprintf(fmt, ap); printf("\n"); }
   va_end(ap);
 }
+/* An API contract that holds whatever the device does: fails even with -l. */
+static void expect_api(int cond, const char *fmt, ...) {
+  va_list ap;
+  va_start(ap, fmt);
+  if (cond) n_ok++;
+  else { n_fail++; printf("  FAIL [%s] ", cur_mode); vprintf(fmt, ap); printf("\n"); }
+  va_end(ap);
+}
 /* e: uvc_error_t / libusb return; success counts ok, failure counts soft. */
 static int soft(int e) { if (e >= 0) n_ok++; else n_soft++; return e; }
 
@@ -302,7 +310,16 @@ static void mode_info(void) {
 
 /* ================= controls ================= */
 static const enum uvc_req_code REQS[] = {UVC_GET_CUR, UVC_GET_MIN, UVC_GET_MAX, UVC_GET_RES, UVC_GET_LEN, UVC_GET_INFO, UVC_GET_DEF};
-#define GETALL(expr) do { for (unsigned _i = 0; _i < 7; _i++) { enum uvc_req_code RC = REQS[_i]; (void)RC; soft(expr); } } while (0)
+/* Typed getters return 0 or a negative uvc_error_t for the requests whose reply is the control's
+ * value (CUR, MIN, MAX, RES, DEF): never a byte count, whatever the device replies (a short reply
+ * would otherwise look like neither, with the out parameter unset). GET_LEN and GET_INFO replies have
+ * their own sizes: typed getters aren't meant for them. */
+static int typed_rc(int r, enum uvc_req_code rc, const char *call) {
+  if (rc != UVC_GET_LEN && rc != UVC_GET_INFO)
+    expect_api(r <= 0, "%s returned %d: neither success nor an error code", call, r);
+  return soft(r);
+}
+#define GETALL(expr) do { for (unsigned _i = 0; _i < 7; _i++) { enum uvc_req_code RC = REQS[_i]; typed_rc(expr, RC, #expr); } } while (0)
 #define SIMPLE(name, T) do { T v = 0; GETALL(uvc_get_##name(devh, &v, RC)); \
     if (uvc_get_##name(devh, &v, UVC_GET_CUR) == UVC_SUCCESS) { \
       soft(uvc_set_##name(devh, (T)-1)); /* out of range: the device may reject it (error path) */ \
@@ -1404,6 +1421,31 @@ static void mode_open(void) {
   printf("RESULT_EXTRA devices=%d find=%d open=%d (%s)\n", n, fe, oe, uvc_strerror(oe));
 }
 
+/* ================= absent ================= */
+/* The typed controls of a unit the device doesn't have must fail, not dereference the missing unit
+ * (libuvc#85). Not part of `all`: libuvc crashes on it. */
+static void mode_absent(void) {
+  expect(open_device() == 0, "open device");
+  if (!devh) return;
+  int n = 0;
+  if (!uvc_get_camera_terminal(devh)) {
+    uint8_t v; n++;
+    printf("  uvc_get_ae_mode without a camera terminal\n"); fflush(stdout);
+    expect_api(uvc_get_ae_mode(devh, &v, UVC_GET_CUR) < 0, "uvc_get_ae_mode without a camera terminal fails");
+  }
+  if (!uvc_get_processing_units(devh)) {
+    int16_t v; n++;
+    printf("  uvc_get_brightness without a processing unit\n"); fflush(stdout);
+    expect_api(uvc_get_brightness(devh, &v, UVC_GET_CUR) < 0, "uvc_get_brightness without a processing unit fails");
+  }
+  if (!uvc_get_selector_units(devh)) {
+    uint8_t v; n++;
+    printf("  uvc_get_input_select without a selector unit\n"); fflush(stdout);
+    expect_api(uvc_get_input_select(devh, &v, UVC_GET_CUR) < 0, "uvc_get_input_select without a selector unit fails");
+  }
+  expect(n > 0, "the device lacks a unit");
+}
+
 /* ================= wrap ================= */
 /* uvc_wrap() on a descriptor of a system device (the shim ignores the fd and wraps an emulated device). */
 static void mode_wrap(void) {
@@ -1442,14 +1484,15 @@ static void mode_wrap(void) {
 
 /* ================= main ================= */
 typedef void (*mode_fn)(void);
-static const struct { const char *name; mode_fn fn; } MODES[] = {
-  {"info", mode_info}, {"controls", mode_controls}, {"convert", mode_convert}, {"poll", mode_poll},
-  {"still", mode_still}, {"multi", mode_multi}, {"status", mode_status}, {"async", mode_async}, {"negotiate", mode_negotiate}, {"wrap", mode_wrap},
-  {"open", mode_open},
+static const struct { const char *name; mode_fn fn; int not_in_all; } MODES[] = {
+  {"info", mode_info, 0}, {"controls", mode_controls, 0}, {"convert", mode_convert, 0}, {"poll", mode_poll, 0},
+  {"still", mode_still, 0}, {"multi", mode_multi, 0}, {"status", mode_status, 0}, {"async", mode_async, 0},
+  {"negotiate", mode_negotiate, 0}, {"wrap", mode_wrap, 0}, {"open", mode_open, 0},
+  {"absent", mode_absent, 1}, /* explicit only: libuvc crashes on it (libuvc#85) */
 };
 
 static void usage(void) {
-  fprintf(stderr, "usage: api_test [-d VID:PID] [-n INDEX] [-m STATUS_WAIT_MS] [-l] [-x] MODE...\n  modes: info controls convert poll still multi status async negotiate wrap open all\n");
+  fprintf(stderr, "usage: api_test [-d VID:PID] [-n INDEX] [-m STATUS_WAIT_MS] [-l] [-x] MODE...\n  modes: info controls convert poll still multi status async negotiate wrap open absent all\n");
 }
 
 int main(int argc, char **argv) {
@@ -1469,7 +1512,7 @@ int main(int argc, char **argv) {
   for (int m = 0; m < nm; m++) {
     int all = !strcmp(modes[m], "all"), hit = 0;
     for (unsigned k = 0; k < sizeof MODES / sizeof *MODES; k++) {
-      if (!all && strcmp(modes[m], MODES[k].name)) continue;
+      if (all ? MODES[k].not_in_all : strcmp(modes[m], MODES[k].name) != 0) continue;
       hit = 1;
       cur_mode = MODES[k].name;
       n_ok = n_soft = n_fail = 0;

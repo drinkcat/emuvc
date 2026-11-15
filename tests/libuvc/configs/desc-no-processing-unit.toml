@@ -1,0 +1,8 @@
+# Synthetic camera whose descriptors leave out the processing unit (the device still answers it):
+# libuvc's processing unit controls (uvc_get_brightness, ...) have no unit to address.
+[[device]]
+model = "synthetic"
+
+[[device.patch]]
+target = { iface = "vc", subtype = 0x05 }  # VC_PROCESSING_UNIT
+remove = true

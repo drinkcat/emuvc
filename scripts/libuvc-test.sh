@@ -263,6 +263,16 @@ BUG="probe reply with dwMaxPayloadTransferSize 0xffff0400: no alternate setting 
 BUG="probe reply with bFormatIndex/bFrameIndex 0: libuvc can't stream" \
   CHECK_RE='^RESULT mode=poll ' TEST_BIN=api_test run_case api-probe-zero-index bug EMUVC_CONFIG="$CFG/probe-zero-index.toml" -- poll
 
+# A short control reply (GET_CUR(brightness) truncated to 1 byte): typed getters must fail. With -l only
+# that rule stays strict (api_test's typed_rc), the rest of the controls mode is lenient.
+BUG="typed getters return a short reply's byte count, neither success nor an error code, out parameter unset" \
+  CHECK_RE='^RESULT mode=controls ' TEST_BIN=api_test run_case api-short-control-reply bug EMUVC_CONFIG="$CFG/short-control-reply.toml" $V -- -l controls
+# The typed controls of a unit the camera lacks must fail, not dereference the missing unit.
+BUG="libuvc#85: uvc_get_input_select() dereferences uvc_get_selector_units(), NULL without a selector unit" BUG_CRASH=1 \
+  CHECK_RE='^RESULT mode=absent ' TEST_BIN=api_test run_case api-absent-selector-unit bug EMUVC_CONFIG="$CFG/no-selector-unit.toml" $V -- absent
+BUG="libuvc#85: processing unit controls dereference uvc_get_processing_units(), NULL without one" BUG_CRASH=1 \
+  CHECK_RE='^RESULT mode=absent ' TEST_BIN=api_test run_case api-absent-processing-unit bug EMUVC_CONFIG="$CFG/desc-no-processing-unit.toml" $V -- absent
+
 # Asynchronous controls (UVC 1.5 2.4.4): completions and a Control Failure Change reach the status callback.
 CHECK_RE='async_ok=[2-9] async_failed=1' run_api api-async-completion EMUVC_CONFIG="$CFG/synthetic-async.toml" -- async
 # Status packets at the edges of 2.4.2.2: malformed ones are dropped, well-formed ones still arrive.
