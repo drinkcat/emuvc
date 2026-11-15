@@ -191,6 +191,20 @@ done
 grep -E "commit|streaming" /tmp/usbip-bulk-stop-clear-halt.log | tail -n 6
 unserve
 
+# Control Change interrupts (synthetic-events.toml: brightness 10 every 200 ms): uvcvideo turns them into
+# V4L2 control events, so it vouches for the emulator's status packets. uvcvideo only reads the status
+# endpoint while the camera is on (streaming, or during some control ioctls): a capture runs meanwhile.
+step "uvcvideo: control events"
+serve synthetic-events Synthetic
+if [ -n "$dev" ]; then
+  timeout 20 v4l2-ctl -d "$dev" --set-fmt-video=width=640,height=480,pixelformat=YUYV --stream-mmap=4 \
+    --stream-count=300 >/dev/null 2>&1 &
+  capture=$!
+  check sh -c "timeout 10 v4l2-ctl -d $dev --wait-for-event=ctrl=brightness | grep 'value: 10 0xa'"
+  kill "$capture" 2>/dev/null; wait "$capture" 2>/dev/null
+fi
+unserve
+
 step "emuvc log (tail)"
 tail -n 12 /tmp/usbip.log
 dmesg | grep -iE 'error|fail|warn' | grep -v -iE 'acpi|firmware|pci|i8042|rtc' | tail -10
