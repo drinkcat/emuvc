@@ -465,6 +465,11 @@ fn clock_quirks() {
 
 /// Payloads of a bulk YUYV stream (one per transfer) from a synthetic camera with `quirks`.
 fn bulk_payloads(quirks: emuvc_uvc::stream::StreamQuirks, n: usize) -> Vec<Vec<u8>> {
+    bulk_payloads_of(quirks, n, 2)
+}
+
+/// Payloads of a bulk stream of format `format` (1 MJPEG, 2 YUYV), first frame size.
+fn bulk_payloads_of(quirks: emuvc_uvc::stream::StreamQuirks, n: usize, format: u8) -> Vec<Vec<u8>> {
     let mut cfg = synthetic(SyntheticConfig {
         transfer: "bulk".into(),
         ..Default::default()
@@ -474,7 +479,7 @@ fn bulk_payloads(quirks: emuvc_uvc::stream::StreamQuirks, n: usize) -> Vec<Vec<u
     let info = host.attach(build(&cfg).unwrap()).unwrap();
     let view = ConfigView::parse(&info.configs[0]).unwrap();
     let vs = &parse_function(&view, 0, info.speed).unwrap().streaming[0];
-    probe_commit(&host, info.id, vs.interface, 2, 1, 333_333, 48).unwrap();
+    probe_commit(&host, info.id, vs.interface, format, 1, 333_333, 48).unwrap();
     (0..n)
         .map(|_| {
             host.transfer(Urb::bulk_in(info.id, vs.endpoint, 64 * 1024))
@@ -553,6 +558,48 @@ fn frame_extra_bytes() {
         }
     }
     assert!(frames >= 3, "frames end");
+}
+
+/// MJPEG frames without their SOI marker; every 2nd frame empty (a header-only payload).
+#[test]
+fn soi_and_empty_frames() {
+    use emuvc_uvc::stream::StreamQuirks;
+    let p = bulk_payloads_of(
+        StreamQuirks {
+            mjpeg_strip_soi: true,
+            ..Default::default()
+        },
+        40,
+        1,
+    );
+    let mut first = true;
+    for p in &p {
+        let data = &p[p[0] as usize..];
+        if first && !data.is_empty() {
+            assert_ne!(&data[..2], &[0xff, 0xd8], "no SOI at the start of a frame");
+        }
+        first = p[1] & HDR_EOF != 0;
+    }
+
+    let p = bulk_payloads(
+        StreamQuirks {
+            empty_every: Some(2),
+            ..Default::default()
+        },
+        80,
+    );
+    let (mut bytes, mut empty, mut frames) = (0, 0, 0);
+    for p in &p {
+        bytes += p.len() - p[0] as usize;
+        if p[1] & HDR_EOF != 0 {
+            empty += (bytes == 0) as u32;
+            (bytes, frames) = (0, frames + 1);
+        }
+    }
+    assert!(
+        frames >= 4 && empty >= 1,
+        "{empty} empty frames of {frames}"
+    );
 }
 
 /// The iSight packet format: a tagged header packet per frame, then data without headers.

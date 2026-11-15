@@ -1,0 +1,4 @@
+# Every 3rd frame carries no data: a header-only payload with EOF (libuvc#182, #212).
+[[device]]
+model = "luxvisions-30c9-0052"
+uvc = { empty_every = 3 }

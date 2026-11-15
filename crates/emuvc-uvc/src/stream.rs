@@ -208,6 +208,10 @@ pub struct StreamQuirks {
     /// Append this many junk bytes to every video frame, before EOF: frames longer than
     /// their format says (uvcvideo flags such uncompressed frames as erroneous).
     pub frame_extra: u32,
+    /// Send MJPEG frames without their SOI marker (the first two bytes, FF D8).
+    pub mjpeg_strip_soi: bool,
+    /// Every Nth video frame carries no data: a header-only payload with EOF.
+    pub empty_every: Option<u32>,
     /// Restrict err/drop/truncate_every to the first N frames of each stream
     /// (e.g. cameras sending garbage while the sensor starts).
     pub only_first_frames: Option<u64>,
@@ -1017,6 +1021,7 @@ impl VsInterface {
             return;
         }
         let truncate = every(self.quirks.truncate_every);
+        let empty = every(self.quirks.empty_every);
         let error = every(self.quirks.err_every);
         let error_mid = every(self.quirks.err_payload);
         let captured_ns = st.start_ns + latest * st.interval_ns;
@@ -1049,6 +1054,12 @@ impl VsInterface {
         }
         if error_mid {
             tx.error_at = Some(tx.data.len() / 2);
+        }
+        if !tx.still && self.quirks.mjpeg_strip_soi && spec.format == PixelFormat::Mjpeg {
+            tx.data.drain(..tx.data.len().min(2));
+        }
+        if !tx.still && empty {
+            tx.data.clear();
         }
         if !tx.still && self.quirks.frame_extra > 0 {
             let n = tx.data.len() + self.quirks.frame_extra as usize;
