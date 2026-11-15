@@ -258,6 +258,11 @@ EOF
 CHECK_RE='^RESULT mode=wrap ' run_api api-tis-vendor-class EMUVC_CONFIG="$CFG/tis-vendor-class.toml" $V -- -m 1500 all
 BUG="UVC cameras with vendor-specific interface classes (QuickCam 046d:08c1-08c7, Aveo 1871:0516, Oculus 2833:0211), which uvcvideo binds by VID/PID: libuvc only knows The Imaging Source's" \
   CHECK_RE='open=0 ' TEST_BIN=api_test run_case api-quickcam-vendor-class bug EMUVC_CONFIG="$CFG/quickcam-vendor-class.toml" $V -- open
+# A camera with two video functions (Luxvisions: RGB and IR, each a VideoControl interface with its
+# streaming interface, like the two cameras of stereo devices). uvcvideo makes a video device of each;
+# libuvc lists the camera once and only ever uses its first function.
+BUG="libuvc uses a camera's first video function only: the Luxvisions IR function and the second camera of stereo devices (libuvc#170, #265, #241, #302) are out of reach" \
+  CHECK_RE='devices=2 ' TEST_BIN=api_test run_case api-second-function bug $D $V -- open
 # libuvc skips 199e:8201-8208 (The Imaging Source) when listing devices.
 CHECK_RE='devices=0 ' run_api api-skip-199e-8201 EMUVC_CONFIG="$CFG/skip-199e-8201.toml" $V -- open
 # Valid descriptors libuvc rejects (uvcvideo takes both): the camera must open.
