@@ -56,8 +56,10 @@ pub struct SyntheticConfig {
     pub streams: u8,
     /// Still image capture method (0-3).
     pub still: u8,
-    /// Hardware trigger (still image button) support.
+    /// Hardware trigger (still image button) support (needs the status endpoint).
     pub trigger: bool,
+    /// The VideoControl interrupt endpoint. Without it, no control is autoupdate or
+    /// asynchronous and there is no hardware trigger (UVC 1.5 2.4.2.2).
     pub status_endpoint: bool,
     pub selector_unit: bool,
     pub encoding_unit: bool,
@@ -417,7 +419,8 @@ pub fn descriptors(cfg: &SyntheticConfig) -> Result<Descriptors, String> {
                 info: 0,
                 terminal_link: OT_FIRST + s,
                 still_capture_method: cfg.still.min(3),
-                trigger_support: cfg.trigger as u8,
+                // A hardware trigger needs the status endpoint (UVC 1.5 2.4.2.2).
+                trigger_support: (cfg.trigger && cfg.status_endpoint) as u8,
                 trigger_usage: 0,
                 control_size: 1,
                 format_controls: formats
@@ -572,6 +575,9 @@ pub fn build(cfg: &DeviceConfig) -> Result<CompositeDevice, String> {
         }
         // Power mode control: USB powered, vendor dependent mode supported.
         uvc.set_power_mode(0x30);
+        if !s.status_endpoint {
+            uvc.without_status_endpoint();
+        }
         if i == 0 {
             uvc.set_events(cfg.events.clone());
             uvc.configure_controls(&cfg.controls)?;
