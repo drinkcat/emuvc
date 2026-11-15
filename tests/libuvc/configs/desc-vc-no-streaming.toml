@@ -1,0 +1,8 @@
+# Synthetic camera whose VC header lists no streaming interface (bInCollection 0). The camera is
+# still a VideoControl interface whose controls work; it just has nothing to stream.
+[[device]]
+model = "synthetic"
+
+[[device.patch]]
+target = { iface = "vc", subtype = 0x01 }   # VC header
+set = [[11, 0]]                             # bInCollection

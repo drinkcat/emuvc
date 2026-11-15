@@ -1,0 +1,6 @@
+# Every frame carries 8000 junk bytes past its size before EOF (libuvc#183, #184, #209): a 640x480
+# YUYV frame of 622400 bytes, whose junk spills over the payloads after the one that fills the frame.
+# uvcvideo flags such a frame as erroneous (V4L2_BUF_FLAG_ERROR; it drops it with nodrop=0).
+[[device]]
+model = "luxvisions-30c9-0052"
+uvc = { frame_extra = 8000 }

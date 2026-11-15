@@ -175,6 +175,11 @@ BUG="EOF in a header-only payload is ignored (checked only when the payload has 
 # ERR on one payload in the middle of every 3rd frame: those frames may be dropped, not delivered with a hole.
 BUG="ERR on one payload: libuvc drops that payload only, and delivers the frame with a hole" \
   run_case err-payload bug EMUVC_CONFIG="$CFG/err-payload.toml" -- -f yuyv -s 640x480 -r 30 -n 30 -t 20 --allow-gaps
+# Frames longer than their size (libuvc#183, #184, #209): dropping them is allowed, bogus frames are not.
+BUG="frames longer than dwMaxVideoFrameSize: libuvc publishes the full buffer, then delivers the bytes past it, from the payloads after, as a frame of their own" \
+  run_case frame-overrun bug EMUVC_CONFIG="$CFG/frame-overrun.toml" -- -f yuyv -s 640x480 -r 30 -n 30 -t 20 --allow-gaps
+# The built-in iSight's packet format (a tagged header packet per frame, then headerless data).
+run_case isight pass EMUVC_CONFIG="$CFG/isight.toml" -- -f yuyv -s 640x480 -r 30 -n 30 -t 15
 # libuvc #270: SuperSpeed isochronous alternate settings carry bursts (wBytesPerInterval above 1024):
 # libuvc must size them from the endpoint companion descriptor and pick the 4096-byte one.
 CHECK_RE='start streaming .* 4096 bytes/payload' run_case ss-burst pass EMUVC_CONFIG="$CFG/synthetic-iso-ss.toml" -- -f yuyv -s 640x480 -r 30 -n 30 -t 15
@@ -196,7 +201,7 @@ CHECK_RE='^RESULT mode=poll ' run_api api-poll-no-eof EMUVC_CONFIG="$CFG/no-eof.
 CHECK_RE='^RESULT mode=convert ' run_api api-convert-no-dht EMUVC_CONFIG="$CFG/no-dht.toml" -- convert
 
 # Quirky-but-working devices: the API must behave as on the default device (strict).
-for c in header-6 header-long header-255 eof-payload probe-extra-fields idle-zlp probe-len-26 probe-no-frame-size startup-delay no-fid-toggle pts-first-only \
+for c in header-6 header-long header-255 eof-payload probe-extra-fields isight idle-zlp probe-len-26 probe-no-frame-size startup-delay no-fid-toggle pts-first-only \
          clock-wrap-jitter; do
   CHECK_RE='^RESULT mode=poll ' run_api "api-poll-$c" EMUVC_CONFIG="$CFG/$c.toml" -- poll negotiate
 done
@@ -215,7 +220,7 @@ done
 
 # Malformed descriptors (configs/desc-*.toml, emuvc_devices::patch) the host must cope with: all modes, strict.
 for c in desc-unknown-vs-subtype desc-color-before-frames desc-num-frames-over desc-duplicate-frame desc-vc-vendor-descriptor \
-         desc-bcduvc-010a desc-unknown-guid desc-still-compression; do
+         desc-bcduvc-010a desc-unknown-guid desc-still-compression desc-format-no-frames; do
   CHECK_RE='^RESULT mode=wrap ' run_api "api-$c" EMUVC_CONFIG="$CFG/$c.toml" $V -- -m 1500 all
 done
 
@@ -250,6 +255,20 @@ done <<'EOF'
 0118 still-sizes-over
 0119 still-compression-over
 EOF
+# UVC cameras with vendor-specific interface classes (bInterfaceClass 0xff): The Imaging Source's,
+# which libuvc recognises by VID/PID (all modes, strict), and Logitech's, which uvcvideo binds by
+# VID/PID and libuvc doesn't list.
+CHECK_RE='^RESULT mode=wrap ' run_api api-tis-vendor-class EMUVC_CONFIG="$CFG/tis-vendor-class.toml" $V -- -m 1500 all
+BUG="UVC cameras with vendor-specific interface classes (QuickCam 046d:08c1-08c7, Aveo 1871:0516, Oculus 2833:0211), which uvcvideo binds by VID/PID: libuvc only knows The Imaging Source's" \
+  CHECK_RE='open=0 ' TEST_BIN=api_test run_case api-quickcam-vendor-class bug EMUVC_CONFIG="$CFG/quickcam-vendor-class.toml" $V -- open
+# A camera with two video functions (Luxvisions: RGB and IR, each a VideoControl interface with its
+# streaming interface, like the two cameras of stereo devices). uvcvideo makes a video device of each;
+# libuvc lists the camera once and only ever uses its first function.
+BUG="libuvc uses a camera's first video function only: the Luxvisions IR function and the second camera of stereo devices (libuvc#170, #265, #241, #302) are out of reach" \
+  CHECK_RE='devices=2 ' TEST_BIN=api_test run_case api-second-function bug $D $V -- open
+# A VC header that lists no streaming interface (libuvc#172, #195, #71): the camera must still open (its
+# controls work); see api-desc-vc-no-streaming/* below for the other modes.
+CHECK_RE='open=0 ' TEST_BIN=api_test run_case api-desc-vc-no-streaming pass EMUVC_CONFIG="$CFG/desc-vc-no-streaming.toml" $V -- open
 # libuvc skips 199e:8201-8208 (The Imaging Source) when listing devices.
 CHECK_RE='devices=0 ' run_api api-skip-199e-8201 EMUVC_CONFIG="$CFG/skip-199e-8201.toml" $V -- open
 # Valid descriptors libuvc rejects (uvcvideo takes both): the camera must open.
@@ -283,6 +302,10 @@ BUG="libuvc#297: uvc_get_stream_ctrl_format_size() truncates 10000000 / interval
 BUG="libuvc probes before sending any SET_INTERFACE (uvcvideo's uvc_video_init selects alt 0 first): the XBox Live Vision camera stalls" \
   CHECK_RE='^RESULT mode=poll ' TEST_BIN=api_test run_case api-need-set-interface bug EMUVC_CONFIG="$CFG/need-set-interface.toml" -- poll
 
+# A method 2 still image larger than the video frames (libuvc#256, libuvc PR #281): it must arrive whole.
+BUG="libuvc#256: a method 2 still larger than the video frames doesn't fit the frame buffer, sized from the video's dwMaxVideoFrameSize" \
+  CHECK_RE='^RESULT mode=stillbig ' TEST_BIN=api_test run_case api-still-larger bug EMUVC_CONFIG="$CFG/synthetic-default.toml" $V -- stillbig
+
 # Asynchronous controls (UVC 1.5 2.4.4): completions and a Control Failure Change reach the status callback.
 CHECK_RE='async_ok=[2-9] async_failed=1' run_api api-async-completion EMUVC_CONFIG="$CFG/synthetic-async.toml" -- async
 # Status packets at the edges of 2.4.2.2: malformed ones are dropped, well-formed ones still arrive.
@@ -302,6 +325,9 @@ fi
 
 # Interrupt transfers that time out: the host keeps polling and the events that follow arrive.
 CHECK_RE='button_events=2 value=1 ' run_api api-status-timeout EMUVC_CONFIG="$CFG/status-timeout.toml" -- -m 1000 status
+
+# A status packet longer than libuvc's status buffer overflows; the events that follow still arrive.
+CHECK_RE='button_events=2 ' run_api api-status-overflow EMUVC_CONFIG="$CFG/status-overflow.toml" -- -m 1000 status
 
 # Reshaped extension unit controls ([[device.control]]): libuvc sees the configured size and GET_INFO.
 CHECK_RE='XU 5/1 len=33 info=0x01' run_api api-xu-config EMUVC_CONFIG="$CFG/synthetic-xu.toml" -- controls
@@ -329,6 +355,27 @@ run_api_robust() { # NAME [VAR=val ...]
 # frames are truncated (libuvc hands them to the callback as they are)
 for c in issue-1-probe-stall issue-strict-probe-len issue-garbage-first-frames; do
   run_api_robust "api-$c" EMUVC_CONFIG="$CFG/$c.toml" $V
+done
+# missing descriptors (libuvc#172, #195, #300, #71): no input header in the streaming interface, a VC
+# header that lists no streaming interface
+for c in desc-no-input-header desc-vc-no-streaming; do
+  run_api_robust "api-$c" EMUVC_CONFIG="$CFG/$c.toml" $V
+done
+# descriptor values at the edges: continuous intervals with min above max, 0 bits per pixel,
+# 65535x65535 frames (sizes overflow 32 bits), a 0x0 frame
+for c in desc-interval-range-inverted desc-zero-bpp desc-huge-size; do
+  run_api_robust "api-$c" EMUVC_CONFIG="$CFG/$c.toml" $V
+done
+# Converting the 0x0 frame leaks under ASan: uvc_ensure_frame_size() asks realloc() for 0 bytes, which
+# allocates, and uvc_free_frame() frees the data only when data_bytes > 0. The leak is the bug (lenient,
+# so the case passes once it's fixed).
+for m in $API_MODES; do
+  if [ "$m" = convert ] && [ -n "${LIBUVC_PRELOAD:-}" ]; then
+    BUG="uvc_free_frame() frees the data only when data_bytes > 0: a frame resized to 0 bytes (realloc of 0 allocates) leaks" BUG_CRASH=1 \
+      CHECK_RE="^RESULT mode=$m " TEST_BIN=api_test run_case "api-desc-zero-size/$m" bug EMUVC_CONFIG="$CFG/desc-zero-size.toml" $V -- -l "$m"
+  else
+    CHECK_RE="^RESULT mode=$m " TEST_BIN=api_test run_case "api-desc-zero-size/$m" robust EMUVC_CONFIG="$CFG/desc-zero-size.toml" $V -- "$m"
+  fi
 done
 
 # Unplugged mid-operation (libuvc#152, #53, #16, #146): during a control SET_CUR, and when libuvc selects

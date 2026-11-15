@@ -197,10 +197,17 @@ pub struct StreamQuirks {
     /// Send EOF in a header-only payload after each frame's last data payload,
     /// rather than on it (uvcvideo: "EOF in empty payload").
     pub eof_payload: bool,
+    /// The built-in iSight's packet format (05ac:8501, uvc_isight.c): a single header
+    /// packet per frame, tagged 11223344 deadbeefdeadface, carries no data; the frame's
+    /// data follows in packets without any header, and idle packets are empty.
+    pub isight: bool,
     /// Silently skip every Nth frame.
     pub drop_every: Option<u32>,
     /// Send only the first half of every Nth frame (then EOF).
     pub truncate_every: Option<u32>,
+    /// Append this many junk bytes to every video frame, before EOF: frames longer than
+    /// their format says (uvcvideo flags such uncompressed frames as erroneous).
+    pub frame_extra: u32,
     /// Restrict err/drop/truncate_every to the first N frames of each stream
     /// (e.g. cameras sending garbage while the sensor starts).
     pub only_first_frames: Option<u64>,
@@ -310,6 +317,8 @@ struct FrameTx {
     /// Byte offset whose payload gets the ERR bit (`err_payload`).
     error_at: Option<usize>,
     still: bool,
+    /// `isight`: the frame's header packet has been sent.
+    isight_header: bool,
 }
 
 struct Stream {
@@ -704,6 +713,26 @@ impl VsInterface {
                     },
                 ))
             }
+            (VS_PROBE_CONTROL, GET_RES) => {
+                // UVC 1.5 table 4-76: the resolution of each supported field, for the current
+                // format and frame. Only the frame interval and the quality vary in steps.
+                let step = self
+                    .desc
+                    .format(self.probe.format_index)
+                    .and_then(|f| f.frame(self.probe.frame_index))
+                    .map_or(0, |fr| match &fr.intervals {
+                        crate::topology::Intervals::Continuous { step, .. } => *step,
+                        crate::topology::Intervals::Discrete(_) => 0,
+                    });
+                let c = StreamingControl {
+                    format_index: self.probe.format_index,
+                    frame_index: self.probe.frame_index,
+                    frame_interval: step,
+                    comp_quality: 1,
+                    ..Default::default()
+                };
+                Ok(c.to_bytes(self.probe_len()))
+            }
             (VS_PROBE_CONTROL | VS_COMMIT_CONTROL, GET_LEN) => {
                 Ok((self.probe_len() as u16).to_le_bytes().to_vec())
             }
@@ -825,6 +854,7 @@ impl VsInterface {
             error: false,
             error_at: None,
             still: true,
+            isight_header: false,
         })
     }
 
@@ -1010,6 +1040,7 @@ impl VsInterface {
                 error,
                 error_at: None,
                 still: false,
+                isight_header: false,
             });
         }
         let mut tx = tx.unwrap();
@@ -1018,6 +1049,10 @@ impl VsInterface {
         }
         if error_mid {
             tx.error_at = Some(tx.data.len() / 2);
+        }
+        if !tx.still && self.quirks.frame_extra > 0 {
+            let n = tx.data.len() + self.quirks.frame_extra as usize;
+            tx.data.resize(n, 0x5a);
         }
         let st = self.stream.as_mut().unwrap();
         if !self.quirks.no_fid_toggle {
@@ -1100,6 +1135,9 @@ impl VsInterface {
     /// Builds the next payload of at most `cap` bytes. `None`: nothing to send.
     fn payload(&mut self, now: BusTime, cap: usize) -> Option<Vec<u8>> {
         self.pick_frame(now * UFRAME_NS);
+        if self.quirks.isight {
+            return self.isight_payload(cap);
+        }
         let hlen = self.header_bytes();
         if cap < hlen {
             // The host's packet can't even hold a header.
@@ -1139,6 +1177,48 @@ impl VsInterface {
         Some(out)
     }
 
+    /// iSight: the frame's header packet, then data-only packets. `None` between frames.
+    fn isight_payload(&mut self, cap: usize) -> Option<Vec<u8>> {
+        const TAG: [u8; 12] = [
+            0x11, 0x22, 0x33, 0x44, 0xde, 0xad, 0xbe, 0xef, 0xde, 0xad, 0xfa, 0xce,
+        ];
+        let mut st = self.stream.take()?;
+        let fid = st.fid;
+        let out = match st.cur.as_mut() {
+            None => None,
+            Some(f) if !f.isight_header => {
+                f.isight_header = true;
+                let mut info = HDR_EOH | if fid { HDR_FID } else { 0 };
+                if f.error {
+                    info |= HDR_ERR;
+                }
+                if f.still {
+                    info |= HDR_STI;
+                }
+                let mut h = vec![30, info];
+                h.extend_from_slice(&TAG);
+                h.resize(30, 0);
+                Some(h)
+            }
+            Some(f) => {
+                let (data, eof) = Self::chunk(f, cap);
+                let data = data.to_vec();
+                if eof {
+                    let f = st.cur.take().unwrap();
+                    if f.still {
+                        self.stats.stills_sent += 1;
+                    } else {
+                        self.stats.frames_sent += 1;
+                    }
+                }
+                Some(data)
+            }
+        };
+        self.stats.payloads += out.is_some() as u64;
+        self.stream = Some(st);
+        out
+    }
+
     /// One isochronous service interval.
     pub fn iso_in(&mut self, cx: &mut Ctx, max_len: usize) -> Vec<u8> {
         let Some(st) = &self.stream else {
@@ -1147,7 +1227,7 @@ impl VsInterface {
         let cap = max_len.min(st.payload_size);
         self.pick_frame(cx.now_ns());
         let idle = self.stream.as_ref().is_some_and(|s| s.cur.is_none());
-        if idle && self.quirks.idle == IdlePayload::Zlp {
+        if idle && (self.quirks.idle == IdlePayload::Zlp || self.quirks.isight) {
             return Vec::new();
         }
         self.payload(cx.now(), cap).unwrap_or_default()

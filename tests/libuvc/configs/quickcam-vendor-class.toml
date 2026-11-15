@@ -1,0 +1,15 @@
+# A Logitech QuickCam (046d:08c2): UVC 1.0 with vendor-specific interface classes, like 046d:08c1-08c7,
+# Aveo 1871:0516 or the Oculus 2833:0211. uvcvideo binds these by VID/PID, class 0xff, subclass 1 and
+# protocol 0 (UVC 1.0).
+[[device]]
+model = "synthetic"
+synthetic = { vendor_id = 0x046d, product_id = 0x08c2, uvc = "1.0" }
+
+[[device.patch]]
+target = { iface = "vc", descriptor = "interface" }
+set = [[5, 0xff]]                                    # bInterfaceClass
+
+[[device.patch]]
+target = { iface = "vs", descriptor = "interface" }  # every alternate setting
+every = true
+set = [[5, 0xff]]

@@ -16,6 +16,17 @@
 //! insert_before = [5, 0x24, 0x20, 0, 0]
 //! ```
 //!
+//! `descriptor = "interface"` or `"endpoint"` in a target selects the standard interface or
+//! endpoint descriptors of video interfaces instead (`subtype` unused), and `every = true`
+//! applies `set` to every descriptor the target matches:
+//!
+//! ```toml
+//! [[device.patch]]                 # vendor-specific class on every VideoStreaming alt setting
+//! target = { iface = "vs", descriptor = "interface" }
+//! every = true
+//! set = [[5, 0xff]]                # bInterfaceClass
+//! ```
+//!
 //! `truncate = N` cuts the target to its first N bytes (and sets bLength = N): a descriptor
 //! shorter than its type requires, which `set = [[0, N]]` alone can't make, since the bytes
 //! left behind would no longer parse as descriptors.
@@ -46,15 +57,31 @@ pub enum IfaceKind {
     Vs,
 }
 
-/// The `nth` (0-based) CS_INTERFACE descriptor of `subtype` in VideoControl
-/// or VideoStreaming interfaces.
+/// Which descriptors of a video interface a target selects.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum DescKind {
+    /// Class-specific (CS_INTERFACE) descriptors of `subtype`.
+    #[default]
+    Cs,
+    /// The standard interface descriptors (one per alternate setting).
+    Interface,
+    /// The standard endpoint descriptors.
+    Endpoint,
+}
+
+/// The `nth` (0-based) descriptor of a kind in VideoControl or VideoStreaming interfaces:
+/// by default CS_INTERFACE descriptors of `subtype`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Target {
     pub iface: IfaceKind,
+    #[serde(default)]
     pub subtype: u8,
     #[serde(default)]
     pub nth: usize,
+    #[serde(default)]
+    pub descriptor: DescKind,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -72,6 +99,9 @@ pub struct DescriptorPatch {
     pub remove: bool,
     /// Cuts the target to this many bytes, bLength included (at least 2).
     pub truncate: Option<usize>,
+    /// Applies `set` to every descriptor the target matches (`nth` ignored; no structural
+    /// changes).
+    pub every: bool,
 }
 
 /// One descriptor of a configuration, with the video interface it belongs to.
@@ -116,11 +146,20 @@ fn is_cs(d: &Desc) -> bool {
     d.iface.is_some() && d.bytes.len() >= 3 && d.bytes[1] == CS_INTERFACE
 }
 
+fn matches(d: &Desc, t: &Target) -> bool {
+    d.iface == Some(t.iface)
+        && match t.descriptor {
+            DescKind::Cs => is_cs(d) && d.bytes[2] == t.subtype,
+            DescKind::Interface => d.bytes[1] == dtype::INTERFACE,
+            DescKind::Endpoint => d.bytes[1] == dtype::ENDPOINT,
+        }
+}
+
 fn find(descs: &[Desc], t: &Target) -> Result<usize, String> {
     descs
         .iter()
         .enumerate()
-        .filter(|(_, d)| is_cs(d) && d.iface == Some(t.iface) && d.bytes[2] == t.subtype)
+        .filter(|(_, d)| matches(d, t))
         .nth(t.nth)
         .map(|(i, _)| i)
         .ok_or_else(|| format!("patch target not found: {t:?}"))
@@ -159,6 +198,30 @@ pub fn apply(config: &mut Vec<u8>, patches: &[DescriptorPatch]) -> Result<(), St
 
     for p in patches {
         let t = p.target.as_ref().ok_or("patch without target")?;
+        if p.every {
+            let structural = p.insert_before.is_some()
+                || p.duplicate
+                || p.move_before.is_some()
+                || p.remove
+                || p.truncate.is_some();
+            if structural {
+                return Err(format!("patch {t:?}: `every` only applies `set`"));
+            }
+            let hits: Vec<usize> = (0..descs.len())
+                .filter(|&i| matches(&descs[i], t))
+                .collect();
+            if hits.is_empty() {
+                return Err(format!("patch target not found: {t:?}"));
+            }
+            for i in hits {
+                if let Some(&(off, _)) = p.set.iter().find(|(off, _)| *off >= descs[i].bytes.len())
+                {
+                    return Err(format!("patch {t:?}: offset {off} past the descriptor"));
+                }
+                descs[i].set.extend(&p.set);
+            }
+            continue;
+        }
         let mut i = find(&descs, t)?;
         if let Some(raw) = &p.insert_before {
             let d = Desc {
@@ -347,6 +410,28 @@ mod tests {
     }
 
     #[test]
+    fn standard_descriptors_and_every() {
+        let c = patch(
+            "[[patch]]\ntarget = { iface = \"vs\", descriptor = \"interface\" }\nevery = true\nset = [[5, 0xff]]\n\
+             [[patch]]\ntarget = { iface = \"vc\", descriptor = \"interface\" }\nset = [[6, 0x42]]",
+        );
+        let ifaces: Vec<(u8, u8)> = split(&c)
+            .unwrap()
+            .iter()
+            .filter(|d| d.bytes[1] == dtype::INTERFACE)
+            .map(|d| (d.bytes[5], d.bytes[6]))
+            .collect();
+        assert_eq!(ifaces, [(CC_VIDEO, 0x42), (0xff, SC_VIDEOSTREAMING)]);
+        assert_eq!(c.len(), sample().len());
+        let mut c = sample();
+        let p: DescriptorPatch = toml::from_str(
+            "target = { iface = \"vs\", descriptor = \"interface\" }\nevery = true\nremove = true",
+        )
+        .unwrap();
+        assert!(apply(&mut c, &[p]).is_err());
+    }
+
+    #[test]
     fn move_then_explicit_total_length() {
         let c = patch(
             "[[patch]]\ntarget = { iface = \"vs\", subtype = 7, nth = 1 }\nmove_before = { iface = \"vs\", subtype = 6 }\n\
@@ -363,6 +448,7 @@ mod tests {
             iface: IfaceKind::Vs,
             subtype: 0x10,
             nth: 0,
+            descriptor: DescKind::Cs,
         });
         let p = DescriptorPatch {
             target,
@@ -373,6 +459,7 @@ mod tests {
             iface: IfaceKind::Vs,
             subtype: 6,
             nth: 0,
+            descriptor: DescKind::Cs,
         });
         let p = DescriptorPatch {
             target,

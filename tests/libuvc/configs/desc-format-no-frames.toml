@@ -1,0 +1,18 @@
+# Synthetic camera whose frame-based (H.264) format lists no frame descriptor (bNumFrameDescriptors 0,
+# the three frames removed). Hosts must list the format and keep using the others.
+[[device]]
+model = "synthetic"
+
+[[device.patch]]
+target = { iface = "vs", subtype = 0x11 }   # VS_FRAME_FRAME_BASED, three times
+remove = true
+[[device.patch]]
+target = { iface = "vs", subtype = 0x11 }
+remove = true
+[[device.patch]]
+target = { iface = "vs", subtype = 0x11 }
+remove = true
+
+[[device.patch]]
+target = { iface = "vs", subtype = 0x10 }   # VS_FORMAT_FRAME_BASED
+set = [[4, 0]]                              # bNumFrameDescriptors

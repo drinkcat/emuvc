@@ -1,0 +1,7 @@
+# The built-in iSight (05ac:8501, UVC 1.0): one header packet per frame, tagged 11223344
+# deadbeefdeadface and without data, then data-only packets (uvc_isight.c). libuvc recognises the
+# camera by its VID/PID (is_isight) and parses its packets.
+[[device]]
+model = "synthetic"
+synthetic = { vendor_id = 0x05ac, product_id = 0x8501, uvc = "1.0", formats = ["yuyv"], sizes = [[640, 480], [320, 240]], fps = [30, 15] }
+uvc = { isight = true }

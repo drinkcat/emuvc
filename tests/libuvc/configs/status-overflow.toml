@@ -1,0 +1,15 @@
+# A status endpoint with 64-byte packets, and a 40-byte status packet (a control change with a long
+# value), longer than libuvc's 32-byte status buffer: the transfer completes with an overflow
+# (uvcvideo's buffer is 16 bytes). The host must keep polling: the button press that follows arrives.
+[[device]]
+model = "synthetic"
+synthetic = { status_packet_size = 64 }
+
+[[device.event]]
+at_ms = 100
+kind = { raw = [1, 6, 0, 1, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19,
+                20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35] }
+
+[[device.event]]
+at_ms = 300
+kind = "button"
