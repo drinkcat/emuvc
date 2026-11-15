@@ -71,7 +71,9 @@ period), which keeps runs reproducible as long as the host keeps URBs queued.
   temperature, reported via status interrupts).
 - Streaming: frame `k` is captured at `start + k * dwFrameInterval` and sent
   as payloads (12-byte headers with PTS/SCR by default, FID/EOF framing), one
-  per iso interval or bulk transfer. A stream that isn't read fast enough
+  per iso interval or bulk transfer of the device's (up to
+  dwMaxPayloadTransferSize, ending with a short packet, which a host may read
+  in smaller URBs as uvcvideo does). A stream that isn't read fast enough
   skips stale frames. Alt-setting choice follows from dwMaxPayloadTransferSize
   (smallest alt carrying the bandwidth), as hosts expect.
 - Still images: methods 2 (in the video stream, STI bit) and 3 (dedicated

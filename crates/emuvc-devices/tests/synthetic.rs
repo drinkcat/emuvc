@@ -632,6 +632,61 @@ fn bulk_stop_clear_halt() {
     assert!(probe_commit(&host, info.id, vs.interface, 2, 1, 333_333, 48).is_ok());
 }
 
+/// Bulk payloads read the way the host sees them: transfers of `urb` bytes, a payload ending
+/// with a short transfer (a zero-length one included) or at dwMaxPayloadTransferSize, as
+/// uvcvideo reassembles them. Returns the frames and the number of zero-length transfers.
+fn bulk_frames_by_urb(
+    cfg: &DeviceConfig,
+    urb: usize,
+    frames: usize,
+) -> (Reassembler, usize, usize) {
+    let host = host();
+    let info = host.attach(build(cfg).unwrap()).unwrap();
+    let view = ConfigView::parse(&info.configs[0]).unwrap();
+    let vs = &parse_function(&view, 0, info.speed).unwrap().streaming[0];
+    let c = probe_commit(&host, info.id, vs.interface, 2, 1, 333_333, 48).unwrap();
+    let max = c.max_payload_transfer_size as usize;
+    let size = {
+        let f = vs.format(2).unwrap().frame(1).unwrap();
+        f.width as usize * f.height as usize * 2
+    };
+    let (mut r, mut payload, mut zlps) = (Reassembler::default(), Vec::new(), 0);
+    while r.frames.len() < frames {
+        let d = host.transfer(Urb::bulk_in(info.id, vs.endpoint, urb)).data;
+        zlps += d.is_empty() as usize;
+        payload.extend_from_slice(&d);
+        if d.len() < urb || payload.len() >= max {
+            r.push(&std::mem::take(&mut payload));
+        }
+    }
+    (r, zlps, size)
+}
+
+/// A host transfer smaller than a bulk payload gets part of it, and the next transfers the rest
+/// (uvcvideo's 16 KiB URBs, 32 KiB payloads); a short payload that fills a transfer exactly ends
+/// with a zero-length packet.
+#[test]
+fn bulk_payloads_span_transfers() {
+    let mut cfg = synthetic(SyntheticConfig {
+        transfer: "bulk".into(),
+        ..Default::default()
+    });
+    let (r, _, size) = bulk_frames_by_urb(&cfg, 16 * 1024, 3);
+    assert_eq!(r.bad_headers, 0);
+    assert!(r.frames.iter().all(|(f, err)| f.len() == size && !err));
+    // 16 KiB payloads under a 32 KiB dwMaxPayloadTransferSize: each fills a transfer, and only
+    // the zero-length packet after it tells the host it ended.
+    cfg.uvc.bulk_payload_size = Some(16 * 1024);
+    let (r, zlps, size) = bulk_frames_by_urb(&cfg, 16 * 1024, 3);
+    assert_eq!(r.bad_headers, 0);
+    assert!(r.frames.iter().all(|(f, err)| f.len() == size && !err));
+    assert!(
+        zlps >= r.payloads - 3,
+        "{zlps} zero-length packets, {} payloads",
+        r.payloads
+    );
+}
+
 /// The iSight packet format: a tagged header packet per frame, then data without headers.
 #[test]
 fn isight_packets() {

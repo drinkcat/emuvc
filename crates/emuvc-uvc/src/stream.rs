@@ -3,9 +3,11 @@
 //! Frames are produced on the bus clock: frame `k` of a stream is captured
 //! at `start + k * dwFrameInterval` (plus an optional startup delay) and is
 //! then sent as UVC payloads — one per isochronous service interval, or one
-//! per bulk transfer. If the host doesn't read fast enough, stale frames are
-//! skipped like a real sensor would, so timing bugs on the host side show up
-//! as dropped frames, not as an artificially perfect stream.
+//! per bulk transfer of the device's (up to dwMaxPayloadTransferSize, ending
+//! with a short packet; a host may read it in smaller pieces). If the host
+//! doesn't read fast enough, stale frames are skipped like a real sensor
+//! would, so timing bugs on the host side show up as dropped frames, not as
+//! an artificially perfect stream.
 
 use log::{debug, info, warn};
 use serde::{Deserialize, Serialize};
@@ -342,6 +344,14 @@ struct Stream {
     next_frame: u64,
     cur: Option<FrameTx>,
     fid: bool,
+    /// Bulk: the committed dwMaxPayloadTransferSize, which ends a payload without a short packet.
+    max_payload: usize,
+    /// Bulk: the rest of the payload being sent, for the host's next transfers.
+    rest: Vec<u8>,
+    /// Bulk: the payload being sent ends with a zero-length packet if it fills a transfer.
+    zlp_if_full: bool,
+    /// Bulk: a zero-length packet is due.
+    zlp: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -972,6 +982,10 @@ impl VsInterface {
             next_frame: 0,
             cur: None,
             fid: false,
+            max_payload: c.max_payload_transfer_size as usize,
+            rest: Vec::new(),
+            zlp_if_full: false,
+            zlp: false,
         });
     }
 
@@ -1180,7 +1194,8 @@ impl VsInterface {
         }
         let eof_payload = self.quirks.eof_payload;
         let mut st = self.stream.take()?;
-        let mut out = Vec::with_capacity(cap.min(st.payload_size.max(hlen)));
+        let left = st.cur.as_ref().map_or(0, |f| f.data.len() - f.offset);
+        let mut out = Vec::with_capacity(cap.min(hlen + left));
         let mut body = Vec::new();
         let first = st.cur.as_ref().is_some_and(|f| f.offset == 0);
         let (eof, err) = match st.cur.as_mut() {
@@ -1268,13 +1283,33 @@ impl VsInterface {
         self.payload(cx.now(), cap).unwrap_or_default()
     }
 
-    /// One bulk transfer: a payload, or `None` (NAK) between frames.
+    /// One host bulk transfer of at most `max_len` bytes, or `None` (NAK) between frames.
+    /// A payload is one bulk transfer of the device's, which ends with a short packet: a host
+    /// transfer smaller than it gets part of it and the next ones the rest (uvcvideo's 16 KiB
+    /// URBs, with 32 KiB payloads). A payload shorter than dwMaxPayloadTransferSize that fills
+    /// a host transfer exactly ends with a zero-length packet.
     pub fn bulk_in(&mut self, cx: &mut Ctx, max_len: usize) -> Option<Vec<u8>> {
-        let st = self.stream.as_ref()?;
-        let cap = max_len.min(st.payload_size.max(self.header_bytes() + 1));
-        self.pick_frame(cx.now_ns());
-        self.stream.as_ref()?.cur.as_ref()?;
-        self.payload(cx.now(), cap)
+        let hlen = self.header_bytes();
+        let st = self.stream.as_mut()?;
+        if std::mem::take(&mut st.zlp) {
+            return Some(Vec::new());
+        }
+        let mut data = std::mem::take(&mut st.rest);
+        if data.is_empty() {
+            let size = st.payload_size.max(hlen + 1);
+            self.pick_frame(cx.now_ns());
+            self.stream.as_ref()?.cur.as_ref()?;
+            data = self.payload(cx.now(), size)?;
+            let st = self.stream.as_mut()?;
+            st.zlp_if_full = data.len() < st.max_payload;
+        }
+        let st = self.stream.as_mut()?;
+        if data.len() > max_len {
+            st.rest = data.split_off(max_len);
+        } else if data.len() == max_len && st.zlp_if_full {
+            st.zlp = true;
+        }
+        Some(data)
     }
 
     /// Method 3: one transfer on the still image bulk endpoint.

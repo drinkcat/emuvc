@@ -164,6 +164,20 @@ serve eof-payload-no-fid "Integrated RGB"
 [ -n "$q" ] && echo "$q" >/sys/module/uvcvideo/parameters/quirks 2>/dev/null
 unserve
 
+# Bulk streaming through uvcvideo, whose URBs (16 KiB) are smaller than the payloads (32 KiB).
+yuyv synthetic-bulk-hs Synthetic
+# A bulk camera that stops only on CLEAR_FEATURE(ENDPOINT_HALT) (libuvc#257): uvcvideo stops bulk streams
+# that way, so a second capture works.
+step "uvcvideo: bulk-stop-clear-halt"
+serve bulk-stop-clear-halt Synthetic
+for round in 1 2; do
+  [ -n "$dev" ] && check timeout 30 v4l2-ctl -d "$dev" --set-fmt-video=width=640,height=480,pixelformat=YUYV \
+    --stream-mmap=4 --stream-count=10 --stream-to=/tmp/bulk$round.yuyv &&
+    check "$EMUVC" check-frames -f yuyv -s 640x480 /tmp/bulk$round.yuyv
+done
+grep -E "commit|streaming" /tmp/usbip-bulk-stop-clear-halt.log | tail -n 6
+unserve
+
 step "emuvc log (tail)"
 tail -n 12 /tmp/usbip.log
 dmesg | grep -iE 'error|fail|warn' | grep -v -iE 'acpi|firmware|pci|i8042|rtc' | tail -10
