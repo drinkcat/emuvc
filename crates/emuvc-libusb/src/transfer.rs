@@ -37,6 +37,8 @@ struct Block {
     urb: AtomicU64,
     /// Killed by libusb_release_interface: completes as COMPLETED with no data.
     killed: std::sync::atomic::AtomicBool,
+    /// Bytes this transfer holds of usbfs's memory limit while in flight.
+    usbfs: AtomicU64,
     t: libusb_transfer,
 }
 
@@ -191,6 +193,16 @@ pub unsafe extern "C" fn libusb_submit_transfer(transfer: *mut libusb_transfer) 
             urb.timeout = Some(Duration::from_millis(t.timeout as u64));
         }
         urb.short_not_ok = is_in && t.flags & LIBUSB_TRANSFER_SHORT_NOT_OK != 0;
+        // usbfs's memory limit (usbfs_memory_mb), and the URB size some Android kernels refuse
+        // (libuvc#299, #326). libusb reports ENOMEM as NO_MEM for bulk and interrupt transfers, as
+        // an I/O error ("submiturb failed, errno=12") for isochronous and control ones.
+        if !h.context().bus.usbfs_reserve(len as u64) {
+            return match t.type_ {
+                LIBUSB_TRANSFER_TYPE_BULK | LIBUSB_TRANSFER_TYPE_INTERRUPT => LIBUSB_ERROR_NO_MEM,
+                _ => LIBUSB_ERROR_IO,
+            };
+        }
+        b.usbfs.store(len as u64, Ordering::Release);
         b.state.store(SUBMITTED, Ordering::Release);
         let events = h.context().events.clone();
         let tp = transfer as usize;
@@ -210,6 +222,7 @@ pub unsafe extern "C" fn libusb_submit_transfer(transfer: *mut libusb_transfer) 
             }
             Err(e) => {
                 h.inflight.lock().unwrap().remove(&tp);
+                usbfs_release(transfer);
                 b.state.store(IDLE, Ordering::Release);
                 match e {
                     UsbError::NoDevice => LIBUSB_ERROR_NO_DEVICE,
@@ -316,6 +329,8 @@ unsafe fn complete(transfer: *mut libusb_transfer, c: Completion) {
         if let Some(h) = handle_ref(t.dev_handle) {
             h.inflight.lock().unwrap().remove(&(transfer as usize));
         }
+        // Before the callback, which may submit it again.
+        usbfs_release(transfer);
         block(transfer).state.store(IDLE, Ordering::Release);
         let flags = t.flags;
         if let Some(cb) = t.callback {
@@ -340,7 +355,20 @@ pub(crate) unsafe fn killed(transfer: *mut libusb_transfer) -> bool {
 
 /// Detaches a transfer from its URB (handle closed while in flight).
 pub(crate) unsafe fn mark_idle(transfer: *mut libusb_transfer) {
-    unsafe { block(transfer).state.store(IDLE, Ordering::Release) };
+    unsafe {
+        usbfs_release(transfer);
+        block(transfer).state.store(IDLE, Ordering::Release);
+    }
+}
+
+/// Gives back the share of usbfs's memory a transfer held in flight (once).
+unsafe fn usbfs_release(transfer: *mut libusb_transfer) {
+    let n = unsafe { block(transfer) }.usbfs.swap(0, Ordering::AcqRel);
+    if n > 0
+        && let Ok(bus) = crate::core::bus()
+    {
+        bus.usbfs_release(n);
+    }
 }
 
 unsafe fn is_control_in(t: &libusb_transfer) -> bool {

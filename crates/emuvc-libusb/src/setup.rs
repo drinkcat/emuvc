@@ -32,5 +32,11 @@ pub fn create_bus() -> Result<Bus, String> {
             Err(e) => warn!("emuvc: {} failed enumeration: {e}", d.model),
         }
     }
-    Ok(Bus::new(host, cfg.kernel_driver))
+    let usbfs = cfg.usbfs_memory_mb as u64 * 1024 * 1024;
+    Ok(Bus::new(
+        host,
+        cfg.kernel_driver,
+        usbfs,
+        cfg.usbfs_max_urb_bytes.map(u64::from),
+    ))
 }

@@ -4,6 +4,8 @@
 //! clock = "realtime"     # or "virtual": run streams as fast as the host reads them
 //! seed = 1               # fault injection randomness
 //! kernel_driver = true   # libusb shim: pretend uvcvideo is bound to video interfaces
+//! usbfs_memory_mb = 16   # libusb shim: usbfs's limit on the URBs in flight (0: none)
+//! usbfs_max_urb_bytes = 65536  # libusb shim: refuse larger URBs, as some Android kernels do
 //!
 //! [[device]]
 //! model = "luxvisions-30c9-0052"
@@ -37,6 +39,10 @@ fn yes() -> bool {
     true
 }
 
+fn usbfs_default() -> u32 {
+    16
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct BusConfig {
@@ -46,6 +52,14 @@ pub struct BusConfig {
     pub seed: u64,
     #[serde(default = "yes")]
     pub kernel_driver: bool,
+    /// libusb shim: usbfs's limit on the memory of the URBs in flight, as `usbfs_memory_mb` (Linux's
+    /// default is 16; 0: none). A submit past it fails with ENOMEM.
+    #[serde(default = "usbfs_default")]
+    pub usbfs_memory_mb: u32,
+    /// libusb shim: URBs larger than this fail with ENOMEM, as on some Android kernels (libuvc#299,
+    /// #326).
+    #[serde(default)]
+    pub usbfs_max_urb_bytes: Option<u32>,
     #[serde(default, rename = "device")]
     pub devices: Vec<DeviceConfig>,
 }
@@ -56,6 +70,8 @@ impl Default for BusConfig {
             clock: ClockMode::Realtime,
             seed: 0,
             kernel_driver: true,
+            usbfs_memory_mb: usbfs_default(),
+            usbfs_max_urb_bytes: None,
             devices: Vec::new(),
         }
     }
@@ -231,6 +247,10 @@ mod tests {
         let cfg = BusConfig::from_toml(&toml).unwrap();
         assert_eq!(cfg.devices.len(), 1);
         assert_eq!(cfg.devices[0].uvc.max_payload_transfer_size, Some(0));
+        assert_eq!(
+            (cfg.usbfs_memory_mb, cfg.usbfs_max_urb_bytes),
+            (16, Some(65536))
+        );
         assert_eq!(cfg.devices[0].faults.len(), 1);
     }
 }

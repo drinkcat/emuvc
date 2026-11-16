@@ -1,0 +1,8 @@
+# Some Android kernels refuse URBs past a size with ENOMEM (libuvc#326: 96 KB transfers fail, 24 KB ones
+# stream; libuvc#299). At 640x480 YUYV 30 fps, libuvc's isochronous transfers are 32 packets of 3072
+# bytes, 96 KiB.
+usbfs_max_urb_bytes = 32768
+
+[[device]]
+model = "synthetic"
+synthetic = { formats = ["yuyv"], sizes = [[640, 480]], fps = [30] }

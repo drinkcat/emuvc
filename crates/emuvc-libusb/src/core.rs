@@ -11,7 +11,7 @@
 use std::collections::HashMap;
 use std::ffi::{c_char, c_int, c_uchar, c_void};
 use std::ptr;
-use std::sync::atomic::{AtomicBool, AtomicI32, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
@@ -31,6 +31,11 @@ pub struct Bus {
     pub emulate_kernel_driver: bool,
     drivers: Mutex<HashMap<DeviceId, KernelDrivers>>,
     claims: Mutex<HashMap<(DeviceId, u8), usize>>,
+    /// usbfs's limit on the buffers of the URBs in flight (usbfs_memory_mb), in bytes; 0: none.
+    usbfs_limit: u64,
+    /// The largest URB usbfs accepts, if limited (some Android kernels).
+    urb_limit: Option<u64>,
+    usbfs_used: AtomicU64,
 }
 
 #[derive(Clone, Copy, Default)]
@@ -40,13 +45,54 @@ struct KernelDrivers {
 }
 
 impl Bus {
-    pub fn new(host: Host, emulate_kernel_driver: bool) -> Self {
+    pub fn new(
+        host: Host,
+        emulate_kernel_driver: bool,
+        usbfs_limit: u64,
+        urb_limit: Option<u64>,
+    ) -> Self {
         Bus {
             host,
             emulate_kernel_driver,
             drivers: Mutex::new(HashMap::new()),
             claims: Mutex::new(HashMap::new()),
+            usbfs_limit,
+            urb_limit,
+            usbfs_used: AtomicU64::new(0),
         }
+    }
+
+    /// usbfs's memory accounting (usbfs_increase_memory_usage): reserves a URB's buffer, or
+    /// returns false (ENOMEM) when it is larger than usbfs accepts or doesn't fit in the limit.
+    pub(crate) fn usbfs_reserve(&self, len: u64) -> bool {
+        if let Some(max) = self.urb_limit.filter(|&max| len > max) {
+            warn!("emuvc: usbfs: {len}-byte URB refused, ENOMEM (URBs of at most {max} bytes)");
+            return false;
+        }
+        let mut used = self.usbfs_used.load(Ordering::Relaxed);
+        loop {
+            if self.usbfs_limit != 0 && used + len > self.usbfs_limit {
+                warn!(
+                    "emuvc: usbfs: {len}-byte URB refused, ENOMEM ({used} of usbfs_memory_mb's {} \
+                     bytes in flight)",
+                    self.usbfs_limit
+                );
+                return false;
+            }
+            match self.usbfs_used.compare_exchange_weak(
+                used,
+                used + len,
+                Ordering::AcqRel,
+                Ordering::Relaxed,
+            ) {
+                Ok(_) => return true,
+                Err(now) => used = now,
+            }
+        }
+    }
+
+    pub(crate) fn usbfs_release(&self, len: u64) {
+        self.usbfs_used.fetch_sub(len, Ordering::AcqRel);
     }
 
     fn drivers(&self, info: &DeviceInfo) -> KernelDrivers {
