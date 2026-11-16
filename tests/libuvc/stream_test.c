@@ -99,13 +99,14 @@ static pthread_mutex_t mu = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t cv = PTHREAD_COND_INITIALIZER;
 static struct {
   int mjpeg, w, h;
-  long target, frames, corrupt, gaps, max_gap, skipped, corrupt_since;
+  long target, frames, corrupt, gaps, max_gap, skipped, corrupt_since, meta, meta_bad;
   int have_prev; uint32_t prev, prev_seq;
   double t_first, t_last;
   int done;
 } S;
 
 static long cb_sleep_ms; /* --cb-sleep: a slow consumer, to make libuvc skip frames */
+static int check_meta;   /* --check-meta: a frame's metadata must start with its frame index */
 
 static double now(void) {
   struct timespec ts; clock_gettime(CLOCK_MONOTONIC, &ts);
@@ -149,6 +150,13 @@ static void cb(uvc_frame_t *f, void *arg) {
         }
       }
       S.prev = v; S.prev_seq = f->sequence; S.have_prev = 1; S.corrupt_since = 0;
+      /* emuvc's payload header metadata (the bytes after PTS/SCR) starts with the frame index, so with
+       * --check-meta the metadata libuvc gathers for a frame must start with that frame's stamp. */
+      if (f->metadata_bytes >= 4) {
+        const uint8_t *m = f->metadata;
+        S.meta++;
+        if (check_meta && (m[0] | m[1] << 8 | m[2] << 16 | (uint32_t)m[3] << 24) != v) S.meta_bad++;
+      }
       S.frames++;
       if (S.frames >= S.target) { S.done = 1; pthread_cond_broadcast(&cv); }
     }
@@ -210,7 +218,7 @@ static void test_controls(uvc_device_handle_t *h) {
 static void usage(void) {
   fprintf(stderr, "usage: stream_test [-d VID:PID] [-f mjpeg|yuyv] [-s WxH] [-r FPS] [-n FRAMES] [-t TIMEOUT_S]\n"
                   "       [--allow-gaps] [--max-gaps N] [--allow-corrupt] [--expect-open-fail] [--controls] [--list]\n"
-                  "       [--fps-tol PCT] [--cb-sleep MS]\n");
+                  "       [--fps-tol PCT] [--cb-sleep MS] [--check-meta]\n");
 }
 
 int main(int argc, char **argv) {
@@ -231,6 +239,7 @@ int main(int argc, char **argv) {
     else if (!strcmp(a, "-t")) timeout = atof(NEXT());
     else if (!strcmp(a, "--fps-tol")) fps_tol = atof(NEXT());
     else if (!strcmp(a, "--cb-sleep")) cb_sleep_ms = atol(NEXT());
+    else if (!strcmp(a, "--check-meta")) check_meta = 1;
     else if (!strcmp(a, "--allow-gaps")) allow_gaps = 1;
     else if (!strcmp(a, "--max-gaps")) max_gaps = atol(NEXT());
     else if (!strcmp(a, "--allow-corrupt")) allow_corrupt = 1;
@@ -308,15 +317,17 @@ int main(int argc, char **argv) {
   int done = S.done;
   S.done = 1;
   long frames = S.frames, corrupt = S.corrupt, gaps = S.gaps, max_gap = S.max_gap, skipped = S.skipped;
+  long meta = S.meta, meta_bad = S.meta_bad;
   double dt = S.t_last - S.t_first;
   pthread_mutex_unlock(&mu);
   uvc_stop_streaming(devh);
 
   double mfps = (frames > 1 && dt > 0) ? (frames - 1) / dt : 0;
-  printf("RESULT frames=%ld corrupt=%ld gaps=%ld max_gap=%ld skipped=%ld fps=%.2f\n", frames, corrupt, gaps, max_gap,
-         skipped, mfps);
+  printf("RESULT frames=%ld corrupt=%ld gaps=%ld max_gap=%ld skipped=%ld fps=%.2f meta=%ld meta_bad=%ld\n", frames,
+         corrupt, gaps, max_gap, skipped, mfps, meta, meta_bad);
   if (!done) { fprintf(stderr, "FAIL: timeout after %.0fs with %ld/%ld frames\n", timeout, frames, S.target); rc = 1; }
   if (corrupt && !allow_corrupt) { fprintf(stderr, "FAIL: %ld corrupt frames\n", corrupt); rc = 1; }
+  if (meta_bad) { fprintf(stderr, "FAIL: %ld frames with another frame's metadata\n", meta_bad); rc = 1; }
   if (gaps > max_gaps && !allow_gaps) {
     fprintf(stderr, "FAIL: %ld gaps (largest %ld frames), %ld allowed\n", gaps, max_gap, max_gaps); rc = 1;
   }

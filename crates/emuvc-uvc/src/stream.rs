@@ -3,9 +3,11 @@
 //! Frames are produced on the bus clock: frame `k` of a stream is captured
 //! at `start + k * dwFrameInterval` (plus an optional startup delay) and is
 //! then sent as UVC payloads — one per isochronous service interval, or one
-//! per bulk transfer. If the host doesn't read fast enough, stale frames are
-//! skipped like a real sensor would, so timing bugs on the host side show up
-//! as dropped frames, not as an artificially perfect stream.
+//! per bulk transfer of the device's (up to dwMaxPayloadTransferSize, ending
+//! with a short packet; a host may read it in smaller pieces). If the host
+//! doesn't read fast enough, stale frames are skipped like a real sensor
+//! would, so timing bugs on the host side show up as dropped frames, not as
+//! an artificially perfect stream.
 
 use log::{debug, info, warn};
 use serde::{Deserialize, Serialize};
@@ -180,7 +182,8 @@ impl ProbeOverride {
 pub struct StreamQuirks {
     pub idle: IdlePayload,
     /// Payload header length (default 12 = PTS + SCR; 2 = none, 6 = PTS).
-    /// Longer headers carry metadata bytes after the SCR. 0 and 1 are bogus: the
+    /// Longer headers carry metadata bytes after the SCR in a frame's payloads (the
+    /// frame index, then filler); idle payloads stop at the SCR. 0 and 1 are bogus: the
     /// payload is that bHeaderLength byte alone, then frame data.
     pub header_len: Option<u8>,
     /// Set the PTS and SCR flags whatever the header length (bogus headers).
@@ -212,6 +215,9 @@ pub struct StreamQuirks {
     pub mjpeg_strip_soi: bool,
     /// Every Nth video frame carries no data: a header-only payload with EOF.
     pub empty_every: Option<u32>,
+    /// The payload headers of every Nth video frame stop at the SCR: no metadata, while the
+    /// other frames carry `header_len` - 12 bytes of it.
+    pub no_metadata_every: Option<u32>,
     /// Restrict err/drop/truncate_every to the first N frames of each stream
     /// (e.g. cameras sending garbage while the sensor starts).
     pub only_first_frames: Option<u64>,
@@ -233,6 +239,10 @@ pub struct StreamQuirks {
     /// alone (Aveo 1871:0306, Ecamm 18cd:cafe; uvcvideo's UVC_QUIRK_PROBE_EXTRAFIELDS copies it
     /// from the device's last reply).
     pub strict_probe_fields: bool,
+    /// Bulk: only CLEAR_FEATURE(ENDPOINT_HALT) on the streaming endpoint stops the stream, the
+    /// way Windows and uvcvideo stop bulk streams; SET_INTERFACE leaves it running, and a commit
+    /// while it runs STALLs ("wrong state").
+    pub bulk_stop_clear_halt: bool,
     /// STALL every class request to the interface until the host has sent it a SET_INTERFACE
     /// (the XBox Live Vision camera misbehaves otherwise; uvcvideo's uvc_video_init sends one
     /// before anything else).
@@ -327,6 +337,8 @@ struct FrameTx {
     still: bool,
     /// `isight`: the frame's header packet has been sent.
     isight_header: bool,
+    /// `no_metadata_every`: no metadata in this frame's payload headers.
+    no_meta: bool,
 }
 
 struct Stream {
@@ -338,6 +350,14 @@ struct Stream {
     next_frame: u64,
     cur: Option<FrameTx>,
     fid: bool,
+    /// Bulk: the committed dwMaxPayloadTransferSize, which ends a payload without a short packet.
+    max_payload: usize,
+    /// Bulk: the rest of the payload being sent, for the host's next transfers.
+    rest: Vec<u8>,
+    /// Bulk: the payload being sent ends with a zero-length packet if it fills a transfer.
+    zlp_if_full: bool,
+    /// Bulk: a zero-length packet is due.
+    zlp: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -750,6 +770,13 @@ impl VsInterface {
             }
             (VS_PROBE_CONTROL | VS_COMMIT_CONTROL, GET_INFO) => Ok(vec![INFO_GET | INFO_SET]),
             (VS_COMMIT_CONTROL, SET_CUR) => {
+                if self.quirks.bulk_stop_clear_halt
+                    && self.stream.is_some()
+                    && matches!(self.desc.transfer, Transfer::Bulk { .. })
+                {
+                    info!("{}: commit while streaming (needs CLEAR_HALT)", self.name);
+                    return Err(ERR_WRONG_STATE);
+                }
                 let mut req = StreamingControl::from_bytes(data);
                 if self.quirks.zero_index_replies && req.format_index == 0 && req.frame_index == 0 {
                     req.format_index = self.probe.format_index;
@@ -871,6 +898,7 @@ impl VsInterface {
             error_at: None,
             still: true,
             isight_header: false,
+            no_meta: false,
         })
     }
 
@@ -878,6 +906,7 @@ impl VsInterface {
         self.alt = alt;
         self.set_interface_seen = true;
         match (&self.desc.transfer, alt) {
+            (Transfer::Bulk { .. }, 0) if self.quirks.bulk_stop_clear_halt => {}
             (_, 0) => self.stop(),
             (Transfer::Isochronous { .. }, _) => self.start(cx),
             (Transfer::Bulk { .. }, _) => {}
@@ -960,6 +989,10 @@ impl VsInterface {
             next_frame: 0,
             cur: None,
             fid: false,
+            max_payload: c.max_payload_transfer_size as usize,
+            rest: Vec::new(),
+            zlp_if_full: false,
+            zlp: false,
         });
     }
 
@@ -1036,6 +1069,7 @@ impl VsInterface {
         let empty = every(self.quirks.empty_every);
         let error = every(self.quirks.err_every);
         let error_mid = every(self.quirks.err_payload);
+        let no_meta = every(self.quirks.no_metadata_every);
         let captured_ns = st.start_ns + latest * st.interval_ns;
         let (spec, interval_ns) = (st.spec, st.interval_ns);
         // Method 2 still capture: this frame is the still image.
@@ -1058,6 +1092,7 @@ impl VsInterface {
                 error_at: None,
                 still: false,
                 isight_header: false,
+                no_meta,
             });
         }
         let mut tx = tx.unwrap();
@@ -1115,6 +1150,10 @@ impl VsInterface {
         if scr || self.quirks.lie_pts_scr {
             info |= HDR_SCR;
         }
+        // Metadata describes a frame: none in idle payloads, nor in `no_metadata_every` frames.
+        if f.is_none_or(|f| f.no_meta) {
+            hlen = hlen.min(2 + if pts { 4 } else { 0 } + if scr { 6 } else { 0 });
+        }
         if eof && !self.quirks.no_eof {
             info |= HDR_EOF;
         }
@@ -1168,7 +1207,8 @@ impl VsInterface {
         }
         let eof_payload = self.quirks.eof_payload;
         let mut st = self.stream.take()?;
-        let mut out = Vec::with_capacity(cap.min(st.payload_size.max(hlen)));
+        let left = st.cur.as_ref().map_or(0, |f| f.data.len() - f.offset);
+        let mut out = Vec::with_capacity(cap.min(hlen + left));
         let mut body = Vec::new();
         let first = st.cur.as_ref().is_some_and(|f| f.offset == 0);
         let (eof, err) = match st.cur.as_mut() {
@@ -1256,13 +1296,33 @@ impl VsInterface {
         self.payload(cx.now(), cap).unwrap_or_default()
     }
 
-    /// One bulk transfer: a payload, or `None` (NAK) between frames.
+    /// One host bulk transfer of at most `max_len` bytes, or `None` (NAK) between frames.
+    /// A payload is one bulk transfer of the device's, which ends with a short packet: a host
+    /// transfer smaller than it gets part of it and the next ones the rest (uvcvideo's 16 KiB
+    /// URBs, with 32 KiB payloads). A payload shorter than dwMaxPayloadTransferSize that fills
+    /// a host transfer exactly ends with a zero-length packet.
     pub fn bulk_in(&mut self, cx: &mut Ctx, max_len: usize) -> Option<Vec<u8>> {
-        let st = self.stream.as_ref()?;
-        let cap = max_len.min(st.payload_size.max(self.header_bytes() + 1));
-        self.pick_frame(cx.now_ns());
-        self.stream.as_ref()?.cur.as_ref()?;
-        self.payload(cx.now(), cap)
+        let hlen = self.header_bytes();
+        let st = self.stream.as_mut()?;
+        if std::mem::take(&mut st.zlp) {
+            return Some(Vec::new());
+        }
+        let mut data = std::mem::take(&mut st.rest);
+        if data.is_empty() {
+            let size = st.payload_size.max(hlen + 1);
+            self.pick_frame(cx.now_ns());
+            self.stream.as_ref()?.cur.as_ref()?;
+            data = self.payload(cx.now(), size)?;
+            let st = self.stream.as_mut()?;
+            st.zlp_if_full = data.len() < st.max_payload;
+        }
+        let st = self.stream.as_mut()?;
+        if data.len() > max_len {
+            st.rest = data.split_off(max_len);
+        } else if data.len() == max_len && st.zlp_if_full {
+            st.zlp = true;
+        }
+        Some(data)
     }
 
     /// Method 3: one transfer on the still image bulk endpoint.

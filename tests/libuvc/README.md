@@ -23,10 +23,14 @@ Runs libuvc (built out of tree, never modified) against the emuvc libusb shim
   libuvc bugs (still failing, or passing now).
 * `stream_test.c` is the client: it streams, decodes the frame stamp
   (`crates/emuvc-video/src/stamp.rs`) and reports
-  `RESULT frames=.. corrupt=.. gaps=.. max_gap=.. skipped=.. fps=..` (exit 0 ok, 1 failed, 2 setup/usage error).
+  `RESULT frames=.. corrupt=.. gaps=.. max_gap=.. skipped=.. fps=.. meta=.. meta_bad=..` (exit 0 ok, 1 failed,
+  2 setup/usage error).
   A gap is a frame lost before libuvc assembled it (device, transport, payload parsing); `skipped`
   counts frames libuvc assembled but overwrote before its callback thread ran (host scheduling,
   reported only). `frame->sequence` tells the two apart.
+  `meta` counts the frames with metadata (`frame->metadata`: libuvc's copy of the payload header bytes after
+  PTS/SCR). emuvc's start with the frame index, so with `--check-meta` a frame's metadata must start with
+  its own (`meta_bad` counts the others).
   `--controls` exercises brightness/AE mode; `--list` lists devices; `--fps-tol PCT` checks the rate;
   `--cb-sleep MS` makes the callback slow;
   `--max-gaps N` tolerates N gaps (`--allow-gaps`: any number).
@@ -45,7 +49,8 @@ Runs libuvc (built out of tree, never modified) against the emuvc libusb shim
   camera per broken length, count or descriptor order (told apart by PID, cases `desc-*`): libuvc must
   reject each with `UVC_ERROR_INVALID_DEVICE`. Other `desc-*.toml` must work (an unknown format GUID,
   compression patterns, a vendor descriptor among the VC ones, bcdUVC 0x010a), or are known bugs
-  (`desc-composite-input`, `desc-bcduvc-0101`: valid descriptors libuvc rejects).
+  (`desc-composite-input`, `desc-bcduvc-0101`: valid descriptors libuvc rejects;
+  `desc-cs-after-endpoint`: VS descriptors after the bulk endpoint, which uvcvideo finds).
   `pts-first-only.toml` and `clock-wrap-jitter.toml` exercise payload header timestamps
   (`uvc.clock`). The first shortens the header after a frame's first payload. The second makes the
   PTS/SCR clock wrap, drift, jitter and step back. libuvc parses PTS/SCR without using them, and
@@ -56,8 +61,9 @@ Runs libuvc (built out of tree, never modified) against the emuvc libusb shim
 
 `api_test [-d VID:PID] [-n INDEX] [-m MS] [-l] MODE...` exercises libuvc's public API
 (modes: `info controls convert poll still multi status async negotiate wrap open`, or `all`;
-`open` only lists, finds and opens the device, and prints the outcome for the descriptor cases; with
-`-x` it leaves the device open for `uvc_exit()` to close; `absent`, not part of `all`, calls the typed
+`open` only lists, finds and opens the device, and prints the outcome for the descriptor cases, with
+the active configuration and the bcdUVC libuvc parsed; with `-x` it leaves the device open for
+`uvc_exit()` to close; `absent`, not part of `all`, calls the typed
 controls of the units the device lacks, which must fail cleanly; `soak`, not part of `all` either,
 opens, streams, stops and closes 20 times in one context; `stillbig`, explicit too, triggers a method 2
 still larger than the video frames, which must arrive whole). It discovers

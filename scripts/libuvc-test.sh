@@ -156,6 +156,11 @@ CHECK_RE='devices: 2' run_case two-devices pass EMUVC_DEVICE=luxvisions-30c9-005
 C930E=EMUVC_DEVICE=logitech-046d-0843
 run_case c930e-mjpeg pass $C930E -- -f mjpeg -s 1280x720 -r 30 -n 30 -t 15
 run_case c930e-yuyv pass $C930E -- -f yuyv -s 640x480 -r 30 -n 30 -t 15
+# The C930e with its UVC 1.5 configuration active (as after `echo 2 > bConfigurationValue`): libuvc
+# must parse that one, not configuration index 0. The first case checks the emulation.
+CHECK_RE='open=0 .* config=2 ' TEST_BIN=api_test run_case api-c930e-config-2-active pass EMUVC_CONFIG="$CFG/c930e-config-2.toml" $V -- open
+BUG="libuvc#357: libuvc parses configuration index 0 (UVC 1.0 here), not the active configuration (UVC 1.5)" \
+  CHECK_RE='open=0 .* config=2 bcduvc=0x0150' TEST_BIN=api_test run_case api-c930e-config-2 bug EMUVC_CONFIG="$CFG/c930e-config-2.toml" $V -- open
 run_case iso-errors pass EMUVC_CONFIG="$CFG/iso-errors.toml" -- -f mjpeg -s 640x480 -r 30 -n 60 -t 20 --allow-gaps --allow-corrupt
 # The device commits dwMaxPayloadTransferSize 0: libuvc must not crash (it divided by zero before
 # libuvc#340) and falls back to the first alt setting with bandwidth. That alt is too small for the
@@ -166,8 +171,12 @@ run_case no-eof pass EMUVC_CONFIG="$CFG/no-eof.toml" -- -f yuyv -s 640x480 -r 30
 run_case pts-first-only pass EMUVC_CONFIG="$CFG/pts-first-only.toml" -- -f yuyv -s 640x480 -r 30 -n 30 -t 15
 run_case pts-first-only-mjpeg pass EMUVC_CONFIG="$CFG/pts-first-only.toml" -- -f mjpeg -s 1280x720 -r 30 -n 30 -t 15
 run_case clock-wrap-jitter pass EMUVC_CONFIG="$CFG/clock-wrap-jitter.toml" -- -f mjpeg -s 1280x720 -r 30 -n 60 -t 15
-# 243 bytes of metadata in every payload header: frames intact, metadata bounded.
-run_case header-255 pass EMUVC_CONFIG="$CFG/header-255.toml" -- -f yuyv -s 640x480 -r 30 -n 30 -t 15
+# 243 bytes of metadata in every payload header: frames intact, metadata bounded, and each frame's own
+# (--check-meta: it starts with the frame index).
+CHECK_RE='meta=[1-9]' run_case header-255 pass EMUVC_CONFIG="$CFG/header-255.toml" -- -f yuyv -s 640x480 -r 30 -n 30 -t 15 --check-meta
+# Metadata on every other frame only: a frame without must not report the previous frame's.
+BUG="a frame without payload header metadata reports the previous frame's: _uvc_populate_frame() updates frame->metadata only when the frame has some" \
+  CHECK_RE='meta=[1-9]' run_case header-metadata-every-other bug EMUVC_CONFIG="$CFG/header-metadata-every-other.toml" -- -f yuyv -s 640x480 -r 30 -n 30 -t 15 --check-meta
 # EOF in a header-only payload after each frame's data (the FID still toggles): frames intact.
 run_case eof-payload pass EMUVC_CONFIG="$CFG/eof-payload.toml" -- -f yuyv -s 640x480 -r 30 -n 30 -t 15
 BUG="EOF in a header-only payload is ignored (checked only when the payload has data): without an FID toggle, MJPEG frames never end" \
@@ -276,25 +285,28 @@ BUG="8-byte input terminal (composite connector): uvc_parse_vc_input_terminal ch
   CHECK_RE='open=0 ' TEST_BIN=api_test run_case api-desc-composite-input bug EMUVC_CONFIG="$CFG/desc-composite-input.toml" $V -- open
 BUG="bcdUVC 0x0101: uvc_open fails with UVC_ERROR_NOT_SUPPORTED" \
   CHECK_RE='open=0 ' TEST_BIN=api_test run_case api-desc-bcduvc-0101 bug EMUVC_CONFIG="$CFG/desc-bcduvc-0101.toml" $V -- open
+# The class-specific VS descriptors after the bulk endpoint (Ecamm Pico iMage): libusb hands them over as
+# the endpoint's extra bytes, where uvcvideo looks too. libuvc must stream.
+BUG="class-specific VS descriptors after the endpoint (Ecamm Pico iMage): libuvc reads only the interface's extra bytes and finds no format" \
+  CHECK_RE='^RESULT mode=poll ' TEST_BIN=api_test run_case api-desc-cs-after-endpoint bug EMUVC_CONFIG="$CFG/desc-cs-after-endpoint.toml" $V -- poll
 # Probe replies uvcvideo copes with (uvc_fixup_video_ctrl, uvc_v4l2_try_format): libuvc must stream.
 BUG="probe reply with dwMaxPayloadTransferSize 0xffff0400: no alternate setting fits, libuvc can't stream" \
   CHECK_RE='^RESULT mode=poll ' TEST_BIN=api_test run_case api-max-payload-huge bug EMUVC_CONFIG="$CFG/max-payload-huge.toml" -- poll
 BUG="probe reply with bFormatIndex/bFrameIndex 0: libuvc can't stream" \
   CHECK_RE='^RESULT mode=poll ' TEST_BIN=api_test run_case api-probe-zero-index bug EMUVC_CONFIG="$CFG/probe-zero-index.toml" -- poll
 
-# A short control reply (GET_CUR(brightness) truncated to 1 byte): typed getters must fail. With -l only
-# that rule stays strict (api_test's typed_rc), the rest of the controls mode is lenient.
-BUG="typed getters return a short reply's byte count, neither success nor an error code, out parameter unset" \
-  CHECK_RE='^RESULT mode=controls ' TEST_BIN=api_test run_case api-short-control-reply bug EMUVC_CONFIG="$CFG/short-control-reply.toml" $V -- -l controls
-# The typed controls of a unit the camera lacks must fail, not dereference the missing unit.
-BUG="libuvc#85: uvc_get_input_select() dereferences uvc_get_selector_units(), NULL without a selector unit" BUG_CRASH=1 \
-  CHECK_RE='^RESULT mode=absent ' TEST_BIN=api_test run_case api-absent-selector-unit bug EMUVC_CONFIG="$CFG/synthetic-no-selector.toml" $V -- absent
-BUG="libuvc#85: processing unit controls dereference uvc_get_processing_units(), NULL without one" BUG_CRASH=1 \
-  CHECK_RE='^RESULT mode=absent ' TEST_BIN=api_test run_case api-absent-processing-unit bug EMUVC_CONFIG="$CFG/desc-no-processing-unit.toml" $V -- absent
+# A short control reply (GET_CUR(brightness) truncated to 1 byte): typed getters must fail, as they do
+# since libuvc#368 (they returned the byte count). With -l only that rule stays strict (api_test's
+# typed_rc), the rest of the controls mode is lenient.
+CHECK_RE='^RESULT mode=controls ' TEST_BIN=api_test run_case api-short-control-reply pass EMUVC_CONFIG="$CFG/short-control-reply.toml" $V -- -l controls
+# The typed controls of a unit the camera lacks must fail. They do since libuvc#368: they dereferenced the
+# missing unit (libuvc#85).
+CHECK_RE='^RESULT mode=absent ' TEST_BIN=api_test run_case api-absent-selector-unit pass EMUVC_CONFIG="$CFG/synthetic-no-selector.toml" $V -- absent
+CHECK_RE='^RESULT mode=absent ' TEST_BIN=api_test run_case api-absent-processing-unit pass EMUVC_CONFIG="$CFG/desc-no-processing-unit.toml" $V -- absent
 
-# Frame intervals: a 0 among the discrete intervals, and 24 fps written as 416667 (libuvc#297).
-BUG="a 0 in a discrete interval list ends libuvc's zero-terminated copy: the intervals after it are lost" \
-  CHECK_RE='^RESULT mode=info ' TEST_BIN=api_test run_case api-desc-zero-interval bug EMUVC_CONFIG="$CFG/desc-zero-interval.toml" $V -- info
+# Frame intervals: a 0 among the discrete intervals, which libuvc maps to 1 since libuvc#367 (the 0 ended
+# its zero-terminated copy, losing the intervals after it), and 24 fps written as 416667 (libuvc#297).
+CHECK_RE='^RESULT mode=info ' TEST_BIN=api_test run_case api-desc-zero-interval pass EMUVC_CONFIG="$CFG/desc-zero-interval.toml" $V -- info
 BUG="libuvc#297: uvc_get_stream_ctrl_format_size() truncates 10000000 / interval, so 416667 (24 fps) isn't found at 24 fps" \
   CHECK_RE='^RESULT mode=negotiate ' TEST_BIN=api_test run_case api-issue-297-24fps bug EMUVC_CONFIG="$CFG/issue-297-24fps.toml" $V -- negotiate
 
@@ -313,15 +325,14 @@ CHECK_RE='async_ok=[2-9] async_failed=1' run_api api-async-completion EMUVC_CONF
 CHECK_RE='button_events=2 value=[0-9]+ info=[0-9]+ failure=1 min=1 max=1 ' \
   run_api api-status-edge EMUVC_CONFIG="$CFG/status-edge.toml" -- -m 1000 status
 
-# uvc_exit() with a device left open. The bug only shows under scripts/libuvc-asan.sh (LIBUVC_PRELOAD):
-# uvc_exit() closes the devices with DL_FOREACH while uvc_close() frees each one, a heap-use-after-free
-# (DL_FOREACH_SAFE fixes it). Without ASan, it only has to exit cleanly.
-if [ -n "${LIBUVC_PRELOAD:-}" ]; then
-  BUG="uvc_exit: heap-use-after-free closing the devices left open (DL_FOREACH, not _SAFE)" BUG_CRASH=1 \
-    TEST_BIN=api_test run_case api-exit-open bug EMUVC_CONFIG="$CFG/synthetic-default.toml" $V -- -x open
-else
-  TEST_BIN=api_test run_case api-exit-open pass EMUVC_CONFIG="$CFG/synthetic-default.toml" $V -- -x open
-fi
+# uvc_exit() with a device left open. It closes the devices with DL_FOREACH_SAFE since libuvc#363: with
+# DL_FOREACH, uvc_close() freeing each one was a heap-use-after-free under scripts/libuvc-asan.sh.
+TEST_BIN=api_test run_case api-exit-open pass EMUVC_CONFIG="$CFG/synthetic-default.toml" $V -- -x open
+
+# A bulk camera that stops streaming only on CLEAR_FEATURE(ENDPOINT_HALT) (libuvc#257): the second stream
+# must start (api_test poll reopens the stream).
+BUG="libuvc#257: libuvc never stops a bulk stream with CLEAR_FEATURE(ENDPOINT_HALT), as uvcvideo and Windows do, so such a camera keeps streaming and refuses the next commit" \
+  CHECK_RE='^RESULT mode=poll ' TEST_BIN=api_test run_case api-bulk-stop-clear-halt bug EMUVC_CONFIG="$CFG/bulk-stop-clear-halt.toml" $V -- poll
 
 # Interrupt transfers that time out: the host keeps polling and the events that follow arrive.
 CHECK_RE='button_events=2 value=1 ' run_api api-status-timeout EMUVC_CONFIG="$CFG/status-timeout.toml" -- -m 1000 status
@@ -364,20 +375,11 @@ done
 # MJPEG frames without SOI through the converters (libjpeg's error handling must recover cleanly)
 CHECK_RE='^RESULT mode=convert ' TEST_BIN=api_test run_case api-mjpeg-no-soi-convert robust EMUVC_CONFIG="$CFG/mjpeg-no-soi.toml" $V -- -l convert
 # descriptor values at the edges: continuous intervals with min above max, 0 bits per pixel,
-# 65535x65535 frames (sizes overflow 32 bits), a 0x0 frame
-for c in desc-interval-range-inverted desc-zero-bpp desc-huge-size; do
+# 65535x65535 frames (sizes overflow 32 bits), a 0x0 frame (converting it leaked under ASan until
+# libuvc#366: uvc_ensure_frame_size() asks realloc() for 0 bytes, which allocates, and uvc_free_frame()
+# freed the data only when data_bytes > 0)
+for c in desc-interval-range-inverted desc-zero-bpp desc-huge-size desc-zero-size; do
   run_api_robust "api-$c" EMUVC_CONFIG="$CFG/$c.toml" $V
-done
-# Converting the 0x0 frame leaks under ASan: uvc_ensure_frame_size() asks realloc() for 0 bytes, which
-# allocates, and uvc_free_frame() frees the data only when data_bytes > 0. The leak is the bug (lenient,
-# so the case passes once it's fixed).
-for m in $API_MODES; do
-  if [ "$m" = convert ] && [ -n "${LIBUVC_PRELOAD:-}" ]; then
-    BUG="uvc_free_frame() frees the data only when data_bytes > 0: a frame resized to 0 bytes (realloc of 0 allocates) leaks" BUG_CRASH=1 \
-      CHECK_RE="^RESULT mode=$m " TEST_BIN=api_test run_case "api-desc-zero-size/$m" bug EMUVC_CONFIG="$CFG/desc-zero-size.toml" $V -- -l "$m"
-  else
-    CHECK_RE="^RESULT mode=$m " TEST_BIN=api_test run_case "api-desc-zero-size/$m" robust EMUVC_CONFIG="$CFG/desc-zero-size.toml" $V -- "$m"
-  fi
 done
 
 # Unplugged mid-operation (libuvc#152, #53, #16, #146): during a control SET_CUR, and when libuvc selects

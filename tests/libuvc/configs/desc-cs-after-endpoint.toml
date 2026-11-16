@@ -1,0 +1,10 @@
+# The Ecamm Pico iMage layout: a bulk camera whose class-specific VideoStreaming descriptors come after
+# its endpoint descriptor, so libusb hands them over as the endpoint's extra bytes, not the interface's.
+# uvcvideo looks there too (uvc_parse_streaming: "trying extra data from endpoint").
+[[device]]
+model = "synthetic"
+synthetic = { transfer = "bulk" }
+
+[[device.patch]]
+target = { iface = "vs", descriptor = "endpoint" }
+move_before = { iface = "vs", subtype = 0x01 }  # VS input header

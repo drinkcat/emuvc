@@ -432,6 +432,28 @@ mod tests {
     }
 
     #[test]
+    fn endpoint_before_class_descriptors() {
+        // A bulk endpoint at the end of the VS interface, moved before its class-specific
+        // descriptors: they then follow the endpoint (libusb: its extra bytes).
+        let mut c = sample();
+        c.extend([7, dtype::ENDPOINT, 0x81, 2, 0, 2, 0]);
+        let n = c.len() as u16;
+        c[2..4].copy_from_slice(&n.to_le_bytes());
+        let p: DescriptorPatch = toml::from_str(
+            "target = { iface = \"vs\", descriptor = \"endpoint\" }\n\
+             move_before = { iface = \"vs\", subtype = 1 }",
+        )
+        .unwrap();
+        apply(&mut c, &[p]).unwrap();
+        let descs = split(&c).unwrap();
+        let types: Vec<u8> = descs.iter().map(|d| d.bytes[1]).collect();
+        let (i, e, cs) = (dtype::INTERFACE, dtype::ENDPOINT, CS_INTERFACE);
+        assert_eq!(types[4..], [i, e, cs, cs, cs, cs]);
+        // wTotalLength of the configuration, and of the input header (class-specific bytes only).
+        assert_eq!((total(&c), descs[6].bytes[4]), (n as usize, 20));
+    }
+
+    #[test]
     fn move_then_explicit_total_length() {
         let c = patch(
             "[[patch]]\ntarget = { iface = \"vs\", subtype = 7, nth = 1 }\nmove_before = { iface = \"vs\", subtype = 6 }\n\

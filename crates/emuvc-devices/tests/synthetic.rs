@@ -602,6 +602,139 @@ fn soi_and_empty_frames() {
     );
 }
 
+/// `bulk_stop_clear_halt`: SET_INTERFACE 0 doesn't stop a bulk stream, a commit then STALLs,
+/// and CLEAR_FEATURE(ENDPOINT_HALT) stops it.
+#[test]
+fn bulk_stop_clear_halt() {
+    let mut cfg = synthetic(SyntheticConfig {
+        transfer: "bulk".into(),
+        ..Default::default()
+    });
+    cfg.uvc.bulk_stop_clear_halt = true;
+    let host = host();
+    let info = host.attach(build(&cfg).unwrap()).unwrap();
+    let view = ConfigView::parse(&info.configs[0]).unwrap();
+    let vs = &parse_function(&view, 0, info.speed).unwrap().streaming[0];
+    probe_commit(&host, info.id, vs.interface, 2, 1, 333_333, 48).unwrap();
+    let setup = |rt: u8, req: u8, val: u16, idx: u16| SetupPacket::new(rt, req, val, idx, 0);
+    // SET_INTERFACE alt 0: still streaming, so the next commit is refused.
+    host.control(
+        info.id,
+        setup(0x01, 0x0b, 0, vs.interface as u16),
+        &[],
+        None,
+    )
+    .unwrap();
+    assert!(probe_commit(&host, info.id, vs.interface, 2, 1, 333_333, 48).is_err());
+    // CLEAR_FEATURE(ENDPOINT_HALT) on the streaming endpoint stops it.
+    host.control(info.id, setup(0x02, 0x01, 0, vs.endpoint as u16), &[], None)
+        .unwrap();
+    assert!(probe_commit(&host, info.id, vs.interface, 2, 1, 333_333, 48).is_ok());
+}
+
+/// Payload header metadata (after the SCR: the frame index, then filler) belongs to frames: all
+/// the payloads of a frame carry the same, idle payloads between frames none, and neither do the
+/// frames `no_metadata_every` picks.
+#[test]
+fn header_metadata() {
+    let mut cfg = synthetic(SyntheticConfig::default());
+    cfg.uvc.header_len = Some(20);
+    cfg.uvc.no_metadata_every = Some(2);
+    let host = host();
+    let dev = host.attach(build(&cfg).unwrap()).unwrap().id;
+    probe_commit(&host, dev, 1, 1, 3, 333333, 48).unwrap(); // MJPEG 160x120
+    host.control(dev, SetupPacket::new(0x01, 0x0b, 5, 1, 0), &[], None)
+        .unwrap(); // alt 5: 3x1024
+    // The metadata's frame index (None: no metadata) of each payload with data, per frame (FID
+    // run); the header lengths of the idle payloads.
+    let (mut frames, mut idle, mut fid) = (Vec::<Vec<Option<u32>>>::new(), Vec::new(), None);
+    while frames.len() < 7 {
+        let c = host.transfer(Urb::iso_in(dev, 0x81, vec![3072; 32]));
+        for p in c.iso.iter().map(|p| &p.data).filter(|d| !d.is_empty()) {
+            let (hlen, info) = (p[0] as usize, p[1]);
+            if p.len() == hlen {
+                idle.push(hlen);
+                continue;
+            }
+            if fid != Some(info & HDR_FID) {
+                frames.push(Vec::new());
+                fid = Some(info & HDR_FID);
+            }
+            assert!(hlen == 20 || hlen == 12, "bHeaderLength {hlen}");
+            let meta = (hlen == 20).then(|| u32::from_le_bytes(p[12..16].try_into().unwrap()));
+            frames.last_mut().unwrap().push(meta);
+        }
+    }
+    assert!(
+        !idle.is_empty() && idle.iter().all(|&h| h == 12),
+        "idle headers {idle:?}"
+    );
+    let whole = &frames[..frames.len() - 1];
+    for f in whole {
+        assert!(f.iter().all(|&m| m == f[0]), "one frame's metadata: {f:?}");
+        assert!(
+            f[0].is_none_or(|i| i % 2 == 0),
+            "odd frames have none: {f:?}"
+        );
+    }
+    assert!(whole.iter().any(|f| f[0].is_none()) && whole.iter().any(|f| f[0] == Some(2)));
+}
+
+/// Bulk payloads read the way the host sees them: transfers of `urb` bytes, a payload ending
+/// with a short transfer (a zero-length one included) or at dwMaxPayloadTransferSize, as
+/// uvcvideo reassembles them. Returns the frames and the number of zero-length transfers.
+fn bulk_frames_by_urb(
+    cfg: &DeviceConfig,
+    urb: usize,
+    frames: usize,
+) -> (Reassembler, usize, usize) {
+    let host = host();
+    let info = host.attach(build(cfg).unwrap()).unwrap();
+    let view = ConfigView::parse(&info.configs[0]).unwrap();
+    let vs = &parse_function(&view, 0, info.speed).unwrap().streaming[0];
+    let c = probe_commit(&host, info.id, vs.interface, 2, 1, 333_333, 48).unwrap();
+    let max = c.max_payload_transfer_size as usize;
+    let size = {
+        let f = vs.format(2).unwrap().frame(1).unwrap();
+        f.width as usize * f.height as usize * 2
+    };
+    let (mut r, mut payload, mut zlps) = (Reassembler::default(), Vec::new(), 0);
+    while r.frames.len() < frames {
+        let d = host.transfer(Urb::bulk_in(info.id, vs.endpoint, urb)).data;
+        zlps += d.is_empty() as usize;
+        payload.extend_from_slice(&d);
+        if d.len() < urb || payload.len() >= max {
+            r.push(&std::mem::take(&mut payload));
+        }
+    }
+    (r, zlps, size)
+}
+
+/// A host transfer smaller than a bulk payload gets part of it, and the next transfers the rest
+/// (uvcvideo's 16 KiB URBs, 32 KiB payloads); a short payload that fills a transfer exactly ends
+/// with a zero-length packet.
+#[test]
+fn bulk_payloads_span_transfers() {
+    let mut cfg = synthetic(SyntheticConfig {
+        transfer: "bulk".into(),
+        ..Default::default()
+    });
+    let (r, _, size) = bulk_frames_by_urb(&cfg, 16 * 1024, 3);
+    assert_eq!(r.bad_headers, 0);
+    assert!(r.frames.iter().all(|(f, err)| f.len() == size && !err));
+    // 16 KiB payloads under a 32 KiB dwMaxPayloadTransferSize: each fills a transfer, and only
+    // the zero-length packet after it tells the host it ended.
+    cfg.uvc.bulk_payload_size = Some(16 * 1024);
+    let (r, zlps, size) = bulk_frames_by_urb(&cfg, 16 * 1024, 3);
+    assert_eq!(r.bad_headers, 0);
+    assert!(r.frames.iter().all(|(f, err)| f.len() == size && !err));
+    assert!(
+        zlps >= r.payloads - 3,
+        "{zlps} zero-length packets, {} payloads",
+        r.payloads
+    );
+}
+
 /// The iSight packet format: a tagged header packet per frame, then data without headers.
 #[test]
 fn isight_packets() {

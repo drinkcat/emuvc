@@ -1491,14 +1491,19 @@ static void mode_open(void) {
     expect(uvc_find_device(ctx, &d, opt_vid, opt_pid ^ 0xffff, NULL) == UVC_ERROR_NO_DEVICE, "find with another PID fails");
   }
   uvc_error_t oe = UVC_ERROR_NO_DEVICE;
+  int config = -1; /* the device's active configuration, and the bcdUVC libuvc parsed */
+  unsigned bcd = 0;
   if (uvc_find_device(ctx, &dev, opt_vid, opt_pid, NULL) == UVC_SUCCESS) oe = uvc_open(dev, &devh);
   if (oe == UVC_SUCCESS) {
     int nfmt = 0;
     for (const uvc_format_desc_t *f = uvc_get_format_descs(devh); f; f = f->next) nfmt++;
     printf("  formats: %d, camera terminal: %s\n", nfmt, uvc_get_camera_terminal(devh) ? "yes" : "no");
+    if (libusb_get_configuration(uvc_get_libusb_handle(devh), &config) != 0) config = -1;
+    bcd = devh->info->ctrl_if.bcdUVC;
     if (opt_leave_open) devh = NULL; /* uvc_exit() closes it */
   }
-  printf("RESULT_EXTRA devices=%d find=%d open=%d (%s)\n", n, fe, oe, uvc_strerror(oe));
+  printf("RESULT_EXTRA devices=%d find=%d open=%d (%s) config=%d bcduvc=0x%04x\n", n, fe, oe,
+         uvc_strerror(oe), config, bcd);
 }
 
 /* ================= soak ================= */
@@ -1597,7 +1602,7 @@ static const struct { const char *name; mode_fn fn; int not_in_all; } MODES[] = 
   {"info", mode_info, 0}, {"controls", mode_controls, 0}, {"convert", mode_convert, 0}, {"poll", mode_poll, 0},
   {"still", mode_still, 0}, {"multi", mode_multi, 0}, {"status", mode_status, 0}, {"async", mode_async, 0},
   {"negotiate", mode_negotiate, 0}, {"wrap", mode_wrap, 0}, {"open", mode_open, 0},
-  {"absent", mode_absent, 1}, /* explicit only: libuvc crashes on it (libuvc#85) */
+  {"absent", mode_absent, 1}, /* explicit only: it crashed libuvc until libuvc#368 (libuvc#85) */
   {"soak", mode_soak, 1},     /* explicit only: long */
   {"stillbig", mode_stillbig, 1}, /* explicit only: libuvc cuts such stills (libuvc#256) */
 };

@@ -96,6 +96,10 @@ pub struct DeviceConfig {
     pub patches: Vec<crate::patch::DescriptorPatch>,
     /// Options of the "synthetic" model.
     pub synthetic: crate::synthetic::SyntheticConfig,
+    /// bConfigurationValue the system selects after enumeration, like
+    /// `echo N > bConfigurationValue` (libusb shim; default: the first configuration). Over
+    /// USB/IP the kernel chooses.
+    pub configuration: Option<u8>,
 }
 
 impl DeviceConfig {
