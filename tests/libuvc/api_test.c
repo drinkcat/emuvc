@@ -1574,6 +1574,42 @@ static void mode_absent(void) {
   expect(n > 0, "the device lacks a unit");
 }
 
+/* ================= rate ================= */
+/* Every frame at the camera's rate (libuvc#267: an ELP at 260 fps). An instant consumer polls for 3 s, and
+ * the frames libuvc assembled but never handed over (gaps in frame->sequence) must stay within 2%, host
+ * scheduling noise. Meant for the real-time clock: the virtual one delivers frames in bursts. */
+static void mode_rate(void) {
+  expect(open_device() == 0, "open device");
+  if (!devh) return;
+  const uvc_format_desc_t *f = uvc_get_format_descs(devh);
+  const uvc_frame_desc_t *fr = f ? smallest_frame(f) : NULL;
+  if (!fr) { expect(0, "no format"); return; }
+  uint32_t iv = default_interval(fr);
+  uvc_stream_ctrl_t c;
+  uvc_stream_handle_t *s = NULL;
+  if (soft(ctrl_for(f, fr, iv, &c)) < 0 || soft(uvc_stream_open_ctrl(devh, &s, &c)) < 0) { expect(0, "stream open"); return; }
+  if (soft(uvc_stream_start(s, NULL, NULL, 0)) < 0) { expect(0, "stream start"); uvc_stream_close(s); return; }
+  struct timespec t0, t;
+  clock_gettime(CLOCK_MONOTONIC, &t0);
+  long delivered = 0, skipped = 0;
+  uint32_t first = 0, last = 0;
+  do {
+    uvc_frame_t *fp = NULL;
+    if (uvc_stream_get_frame(s, &fp, 1000000) == UVC_SUCCESS && fp) {
+      if (delivered && fp->sequence != last + 1) skipped += (long)(fp->sequence - last - 1);
+      if (!delivered) first = fp->sequence;
+      last = fp->sequence;
+      delivered++;
+    }
+    clock_gettime(CLOCK_MONOTONIC, &t);
+  } while ((t.tv_sec - t0.tv_sec) + (t.tv_nsec - t0.tv_nsec) / 1e9 < 3.0);
+  uvc_stream_close(s);
+  long assembled = delivered ? (long)(last - first) + 1 : 0;
+  printf("RESULT_EXTRA rate_fps=%.1f delivered=%ld assembled=%ld skipped=%ld\n", 1e7 / iv, delivered, assembled, skipped);
+  expect(assembled > 0 && skipped * 50 <= assembled, "%ux%u at %.1f fps: %ld of the %ld frames libuvc assembled weren't handed over",
+         fr->wWidth, fr->wHeight, 1e7 / iv, skipped, assembled);
+}
+
 /* ================= wrap ================= */
 /* uvc_wrap() on a descriptor of a system device (the shim ignores the fd and wraps an emulated device). */
 static void mode_wrap(void) {
@@ -1619,10 +1655,11 @@ static const struct { const char *name; mode_fn fn; int not_in_all; } MODES[] = 
   {"absent", mode_absent, 1}, /* explicit only: it crashed libuvc until libuvc#368 (libuvc#85) */
   {"soak", mode_soak, 1},     /* explicit only: long */
   {"stillbig", mode_stillbig, 1}, /* explicit only: libuvc cuts such stills (libuvc#256) */
+  {"rate", mode_rate, 1},         /* explicit only: needs the real-time clock */
 };
 
 static void usage(void) {
-  fprintf(stderr, "usage: api_test [-d VID:PID] [-n INDEX] [-m STATUS_WAIT_MS] [-l] [-s] [-x] MODE...\n  modes: info controls convert poll still multi status async negotiate wrap open absent soak stillbig all\n");
+  fprintf(stderr, "usage: api_test [-d VID:PID] [-n INDEX] [-m STATUS_WAIT_MS] [-l] [-s] [-x] MODE...\n  modes: info controls convert poll still multi status async negotiate wrap open absent soak stillbig rate all\n");
 }
 
 int main(int argc, char **argv) {

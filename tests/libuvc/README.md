@@ -66,7 +66,9 @@ the active configuration and the bcdUVC libuvc parsed; with `-x` it leaves the d
 `uvc_exit()` to close; `absent`, not part of `all`, calls every typed
 control (getters and setters) of the units the device lacks, which must all fail; `soak`, not part of `all` either,
 opens, streams, stops and closes 20 times in one context; `stillbig`, explicit too, triggers a method 2
-still larger than the video frames, which must arrive whole). It discovers
+still larger than the video frames, which must arrive whole; `rate`, explicit too, polls for 3 s at the
+camera's rate with an instant consumer and allows 2% of libuvc's frames not handed over, on the real-time
+clock). It discovers
 what the device offers through libuvc itself (formats, units, extension units, still
 patterns, streaming interfaces), so richer emulated devices raise coverage without code
 changes. Calls a device cannot serve are counted as "soft"; failures are crashes/hangs
