@@ -1,6 +1,6 @@
 /* libuvc public API coverage client for emuvc. See README.md.
  *
- * usage: api_test [-d VID:PID] [-n INDEX] [-m MS] [-l] MODE...
+ * usage: api_test [-d VID:PID] [-n INDEX] [-m MS] [-l] [-s] MODE...
  *   -l: lenient, failed expectations are counted as soft (fault-injection configs);
  *       crashes and hangs still fail
  *   MODE: info controls convert poll still multi status negotiate wrap all
@@ -29,6 +29,11 @@ extern void uvc_print_frameformats(uvc_device_handle_t *devh); /* exported, not 
 /* ---- bookkeeping ---- */
 static int n_ok, n_soft, n_fail;
 static int opt_vid, opt_pid, opt_index, opt_ms = 1000, opt_lenient, opt_leave_open;
+static int opt_short; /* -s: every control reply is short, so every typed control must fail */
+/* Newer than some libuvc refs the suite can test (LIBUVC_REF): called only when present. */
+extern uvc_error_t uvc_get_power_mode_bitmap(uvc_device_handle_t *devh, uint8_t *bitmap,
+                                             enum uvc_req_code req_code) __attribute__((weak));
+static int must_fail; /* absent mode: the typed controls of a unit the device lacks must fail */
 static const char *cur_mode = "";
 
 static void expect(int cond, const char *fmt, ...) {
@@ -315,16 +320,24 @@ static const enum uvc_req_code REQS[] = {UVC_GET_CUR, UVC_GET_MIN, UVC_GET_MAX, 
  * would otherwise look like neither, with the out parameter unset). GET_LEN and GET_INFO replies have
  * their own sizes: typed getters aren't meant for them. */
 static int typed_rc(int r, enum uvc_req_code rc, const char *call) {
-  if (rc != UVC_GET_LEN && rc != UVC_GET_INFO)
+  if (must_fail || opt_short)
+    expect_api(r < 0, "%s returned %d: %s", call, r, must_fail ? "the device lacks the unit" : "short reply");
+  else if (rc != UVC_GET_LEN && rc != UVC_GET_INFO)
     expect_api(r <= 0, "%s returned %d: neither success nor an error code", call, r);
   return soft(r);
 }
+/* Typed setters may fail (read-only, auto mode, out of range), except that they must on a missing unit. */
+static int typed_set(int r, const char *call) {
+  if (must_fail) expect_api(r < 0, "%s returned %d: the device lacks the unit", call, r);
+  return soft(r);
+}
 #define GETALL(expr) do { for (unsigned _i = 0; _i < 7; _i++) { enum uvc_req_code RC = REQS[_i]; typed_rc(expr, RC, #expr); } } while (0)
+#define SET(expr) typed_set(expr, #expr)
 #define SIMPLE(name, T) do { T v = 0; GETALL(uvc_get_##name(devh, &v, RC)); \
     if (uvc_get_##name(devh, &v, UVC_GET_CUR) == UVC_SUCCESS) { \
-      soft(uvc_set_##name(devh, (T)-1)); /* out of range: the device may reject it (error path) */ \
-      soft(uvc_set_##name(devh, v)); /* may legitimately fail (read-only, auto mode) */ \
-    } else soft(uvc_set_##name(devh, 0)); } while (0)
+      SET(uvc_set_##name(devh, (T)-1)); /* out of range: the device may reject it (error path) */ \
+      SET(uvc_set_##name(devh, v)); \
+    } else SET(uvc_set_##name(devh, 0)); } while (0)
 
 /* ---- spec rules for controls, derived from what the device reports (UVC 1.5 4.1.2, 4.2) ---- */
 #define VC_REQUEST_ERROR_CODE_CONTROL 0x02
@@ -568,6 +581,66 @@ static int settable(uint8_t unit, uint8_t sel) {
   return info >= 0 && (info & (INFO_GET | INFO_SET)) == (INFO_GET | INFO_SET) && !(info & (INFO_DISABLED | INFO_ASYNC));
 }
 
+/* The typed controls of each unit: getters for every request, setters of the current (or a
+ * default) value. */
+static void ct_typed(void) {
+  SIMPLE(scanning_mode, uint8_t);
+  SIMPLE(ae_mode, uint8_t);
+  SIMPLE(ae_priority, uint8_t);
+  SIMPLE(exposure_abs, uint32_t);
+  SIMPLE(exposure_rel, int8_t);
+  SIMPLE(focus_abs, uint16_t);
+  SIMPLE(focus_simple_range, uint8_t);
+  SIMPLE(focus_auto, uint8_t);
+  SIMPLE(iris_abs, uint16_t);
+  SIMPLE(iris_rel, uint8_t);
+  SIMPLE(zoom_abs, uint16_t);
+  SIMPLE(roll_abs, int16_t);
+  SIMPLE(privacy, uint8_t);
+  { int8_t a = 0; uint8_t b = 0; GETALL(uvc_get_focus_rel(devh, &a, &b, RC));
+    if (uvc_get_focus_rel(devh, &a, &b, UVC_GET_CUR) == UVC_SUCCESS) SET(uvc_set_focus_rel(devh, a, b)); else SET(uvc_set_focus_rel(devh, 0, 0)); }
+  { int8_t a = 0; uint8_t b = 0, c = 0; GETALL(uvc_get_zoom_rel(devh, &a, &b, &c, RC));
+    if (uvc_get_zoom_rel(devh, &a, &b, &c, UVC_GET_CUR) == UVC_SUCCESS) SET(uvc_set_zoom_rel(devh, a, b, c)); else SET(uvc_set_zoom_rel(devh, 0, 0, 0)); }
+  { int32_t p = 0, t = 0; GETALL(uvc_get_pantilt_abs(devh, &p, &t, RC));
+    if (uvc_get_pantilt_abs(devh, &p, &t, UVC_GET_CUR) == UVC_SUCCESS) SET(uvc_set_pantilt_abs(devh, p, t)); else SET(uvc_set_pantilt_abs(devh, 0, 0)); }
+  { int8_t a = 0, c = 0; uint8_t b = 0, d = 0; GETALL(uvc_get_pantilt_rel(devh, &a, &b, &c, &d, RC));
+    if (uvc_get_pantilt_rel(devh, &a, &b, &c, &d, UVC_GET_CUR) == UVC_SUCCESS) SET(uvc_set_pantilt_rel(devh, a, b, c, d)); else SET(uvc_set_pantilt_rel(devh, 0, 0, 0, 0)); }
+  { int8_t a = 0; uint8_t b = 0; GETALL(uvc_get_roll_rel(devh, &a, &b, RC));
+    if (uvc_get_roll_rel(devh, &a, &b, UVC_GET_CUR) == UVC_SUCCESS) SET(uvc_set_roll_rel(devh, a, b)); else SET(uvc_set_roll_rel(devh, 0, 0)); }
+  { uint16_t w[6] = {0}; GETALL(uvc_get_digital_window(devh, &w[0], &w[1], &w[2], &w[3], &w[4], &w[5], RC));
+    if (uvc_get_digital_window(devh, &w[0], &w[1], &w[2], &w[3], &w[4], &w[5], UVC_GET_CUR) == UVC_SUCCESS)
+      SET(uvc_set_digital_window(devh, w[0], w[1], w[2], w[3], w[4], w[5]));
+    else SET(uvc_set_digital_window(devh, 0, 0, 0, 0, 0, 0)); }
+  { uint16_t w[5] = {0}; GETALL(uvc_get_digital_roi(devh, &w[0], &w[1], &w[2], &w[3], &w[4], RC));
+    if (uvc_get_digital_roi(devh, &w[0], &w[1], &w[2], &w[3], &w[4], UVC_GET_CUR) == UVC_SUCCESS)
+      SET(uvc_set_digital_roi(devh, w[0], w[1], w[2], w[3], w[4]));
+    else SET(uvc_set_digital_roi(devh, 0, 0, 0, 0, 0)); }
+}
+static void pu_typed(void) {
+  SIMPLE(backlight_compensation, uint16_t);
+  SIMPLE(brightness, int16_t);
+  SIMPLE(contrast, uint16_t);
+  SIMPLE(contrast_auto, uint8_t);
+  SIMPLE(gain, uint16_t);
+  SIMPLE(power_line_frequency, uint8_t);
+  SIMPLE(hue, int16_t);
+  SIMPLE(hue_auto, uint8_t);
+  SIMPLE(saturation, uint16_t);
+  SIMPLE(sharpness, uint16_t);
+  SIMPLE(gamma, uint16_t);
+  SIMPLE(white_balance_temperature, uint16_t);
+  SIMPLE(white_balance_temperature_auto, uint8_t);
+  SIMPLE(white_balance_component_auto, uint8_t);
+  SIMPLE(digital_multiplier, uint16_t);
+  SIMPLE(digital_multiplier_limit, uint16_t);
+  SIMPLE(analog_video_standard, uint8_t);
+  SIMPLE(analog_video_lock_status, uint8_t);
+  { uint16_t b = 0, r = 0; GETALL(uvc_get_white_balance_component(devh, &b, &r, RC));
+    if (uvc_get_white_balance_component(devh, &b, &r, UVC_GET_CUR) == UVC_SUCCESS) SET(uvc_set_white_balance_component(devh, b, r));
+    else SET(uvc_set_white_balance_component(devh, 0, 0)); }
+}
+static void su_typed(void) { SIMPLE(input_select, uint8_t); }
+
 static void mode_controls(void) {
   expect(open_device() == 0, "open device");
   if (!devh) return;
@@ -577,65 +650,14 @@ static void mode_controls(void) {
 
   /* power mode (VC interface, no unit) */
   { enum uvc_device_power_mode pm = 0; GETALL(uvc_get_power_mode(devh, &pm, RC));
+    if (uvc_get_power_mode_bitmap) { uint8_t bm = 0; GETALL(uvc_get_power_mode_bitmap(devh, &bm, RC)); }
     if (uvc_get_power_mode(devh, &pm, UVC_GET_CUR) == UVC_SUCCESS) soft(uvc_set_power_mode(devh, pm));
     else soft(uvc_set_power_mode(devh, UVC_VC_VIDEO_POWER_MODE_FULL)); }
 
   manual_mode();
-  if (have_ct) {
-    SIMPLE(scanning_mode, uint8_t);
-    SIMPLE(ae_mode, uint8_t);
-    SIMPLE(ae_priority, uint8_t);
-    SIMPLE(exposure_abs, uint32_t);
-    SIMPLE(exposure_rel, int8_t);
-    SIMPLE(focus_abs, uint16_t);
-    SIMPLE(focus_simple_range, uint8_t);
-    SIMPLE(focus_auto, uint8_t);
-    SIMPLE(iris_abs, uint16_t);
-    SIMPLE(iris_rel, uint8_t);
-    SIMPLE(zoom_abs, uint16_t);
-    SIMPLE(roll_abs, int16_t);
-    SIMPLE(privacy, uint8_t);
-    { int8_t a = 0; uint8_t b = 0; GETALL(uvc_get_focus_rel(devh, &a, &b, RC));
-      if (uvc_get_focus_rel(devh, &a, &b, UVC_GET_CUR) == UVC_SUCCESS) soft(uvc_set_focus_rel(devh, a, b)); else soft(uvc_set_focus_rel(devh, 0, 0)); }
-    { int8_t a = 0; uint8_t b = 0, c = 0; GETALL(uvc_get_zoom_rel(devh, &a, &b, &c, RC));
-      if (uvc_get_zoom_rel(devh, &a, &b, &c, UVC_GET_CUR) == UVC_SUCCESS) soft(uvc_set_zoom_rel(devh, a, b, c)); else soft(uvc_set_zoom_rel(devh, 0, 0, 0)); }
-    { int32_t p = 0, t = 0; GETALL(uvc_get_pantilt_abs(devh, &p, &t, RC));
-      if (uvc_get_pantilt_abs(devh, &p, &t, UVC_GET_CUR) == UVC_SUCCESS) soft(uvc_set_pantilt_abs(devh, p, t)); else soft(uvc_set_pantilt_abs(devh, 0, 0)); }
-    { int8_t a = 0, c = 0; uint8_t b = 0, d = 0; GETALL(uvc_get_pantilt_rel(devh, &a, &b, &c, &d, RC));
-      if (uvc_get_pantilt_rel(devh, &a, &b, &c, &d, UVC_GET_CUR) == UVC_SUCCESS) soft(uvc_set_pantilt_rel(devh, a, b, c, d)); else soft(uvc_set_pantilt_rel(devh, 0, 0, 0, 0)); }
-    { int8_t a = 0; uint8_t b = 0; GETALL(uvc_get_roll_rel(devh, &a, &b, RC));
-      if (uvc_get_roll_rel(devh, &a, &b, UVC_GET_CUR) == UVC_SUCCESS) soft(uvc_set_roll_rel(devh, a, b)); else soft(uvc_set_roll_rel(devh, 0, 0)); }
-    { uint16_t w[6] = {0}; GETALL(uvc_get_digital_window(devh, &w[0], &w[1], &w[2], &w[3], &w[4], &w[5], RC));
-      if (uvc_get_digital_window(devh, &w[0], &w[1], &w[2], &w[3], &w[4], &w[5], UVC_GET_CUR) == UVC_SUCCESS)
-        soft(uvc_set_digital_window(devh, w[0], w[1], w[2], w[3], w[4], w[5]));
-      else soft(uvc_set_digital_window(devh, 0, 0, 0, 0, 0, 0)); }
-    { uint16_t w[5] = {0}; GETALL(uvc_get_digital_roi(devh, &w[0], &w[1], &w[2], &w[3], &w[4], RC));
-      if (uvc_get_digital_roi(devh, &w[0], &w[1], &w[2], &w[3], &w[4], UVC_GET_CUR) == UVC_SUCCESS)
-        soft(uvc_set_digital_roi(devh, w[0], w[1], w[2], w[3], w[4]));
-      else soft(uvc_set_digital_roi(devh, 0, 0, 0, 0, 0)); }
-  }
+  if (have_ct) ct_typed();
   if (have_pu) {
-    SIMPLE(backlight_compensation, uint16_t);
-    SIMPLE(brightness, int16_t);
-    SIMPLE(contrast, uint16_t);
-    SIMPLE(contrast_auto, uint8_t);
-    SIMPLE(gain, uint16_t);
-    SIMPLE(power_line_frequency, uint8_t);
-    SIMPLE(hue, int16_t);
-    SIMPLE(hue_auto, uint8_t);
-    SIMPLE(saturation, uint16_t);
-    SIMPLE(sharpness, uint16_t);
-    SIMPLE(gamma, uint16_t);
-    SIMPLE(white_balance_temperature, uint16_t);
-    SIMPLE(white_balance_temperature_auto, uint8_t);
-    SIMPLE(white_balance_component_auto, uint8_t);
-    SIMPLE(digital_multiplier, uint16_t);
-    SIMPLE(digital_multiplier_limit, uint16_t);
-    SIMPLE(analog_video_standard, uint8_t);
-    SIMPLE(analog_video_lock_status, uint8_t);
-    { uint16_t b = 0, r = 0; GETALL(uvc_get_white_balance_component(devh, &b, &r, RC));
-      if (uvc_get_white_balance_component(devh, &b, &r, UVC_GET_CUR) == UVC_SUCCESS) soft(uvc_set_white_balance_component(devh, b, r));
-      else soft(uvc_set_white_balance_component(devh, 0, 0)); }
+    pu_typed();
     /* brightness: write min/max/def back and verify the read-back when the device accepts it */
     int16_t mn, mx, def, rb;
     if (uvc_get_brightness(devh, &mn, UVC_GET_MIN) == UVC_SUCCESS && uvc_get_brightness(devh, &mx, UVC_GET_MAX) == UVC_SUCCESS &&
@@ -647,7 +669,7 @@ static void mode_controls(void) {
         }
     }
   }
-  if (have_su) SIMPLE(input_select, uint8_t);
+  if (have_su) su_typed();
   /* SIMPLE only counts the setters: with the auto modes off, the typed setters of the manual
    * controls must accept the current value. */
 #define SETBACK(unit, sel, name, T) do { T v_ = 0; \
@@ -1541,22 +1563,13 @@ static void mode_soak(void) {
 static void mode_absent(void) {
   expect(open_device() == 0, "open device");
   if (!devh) return;
+  /* Every typed control of the units the device lacks, getters and setters: all must fail. */
   int n = 0;
-  if (!uvc_get_camera_terminal(devh)) {
-    uint8_t v; n++;
-    printf("  uvc_get_ae_mode without a camera terminal\n"); fflush(stdout);
-    expect_api(uvc_get_ae_mode(devh, &v, UVC_GET_CUR) < 0, "uvc_get_ae_mode without a camera terminal fails");
-  }
-  if (!uvc_get_processing_units(devh)) {
-    int16_t v; n++;
-    printf("  uvc_get_brightness without a processing unit\n"); fflush(stdout);
-    expect_api(uvc_get_brightness(devh, &v, UVC_GET_CUR) < 0, "uvc_get_brightness without a processing unit fails");
-  }
-  if (!uvc_get_selector_units(devh)) {
-    uint8_t v; n++;
-    printf("  uvc_get_input_select without a selector unit\n"); fflush(stdout);
-    expect_api(uvc_get_input_select(devh, &v, UVC_GET_CUR) < 0, "uvc_get_input_select without a selector unit fails");
-  }
+  must_fail = 1;
+  if (!uvc_get_camera_terminal(devh)) { n++; ct_typed(); }
+  if (!uvc_get_processing_units(devh)) { n++; pu_typed(); }
+  if (!uvc_get_selector_units(devh)) { n++; su_typed(); }
+  must_fail = 0;
   expect(n > 0, "the device lacks a unit");
 }
 
@@ -1608,7 +1621,7 @@ static const struct { const char *name; mode_fn fn; int not_in_all; } MODES[] = 
 };
 
 static void usage(void) {
-  fprintf(stderr, "usage: api_test [-d VID:PID] [-n INDEX] [-m STATUS_WAIT_MS] [-l] [-x] MODE...\n  modes: info controls convert poll still multi status async negotiate wrap open absent soak stillbig all\n");
+  fprintf(stderr, "usage: api_test [-d VID:PID] [-n INDEX] [-m STATUS_WAIT_MS] [-l] [-s] [-x] MODE...\n  modes: info controls convert poll still multi status async negotiate wrap open absent soak stillbig all\n");
 }
 
 int main(int argc, char **argv) {
@@ -1618,6 +1631,7 @@ int main(int argc, char **argv) {
     else if (!strcmp(argv[i], "-n") && i + 1 < argc) opt_index = atoi(argv[++i]);
     else if (!strcmp(argv[i], "-m") && i + 1 < argc) opt_ms = atoi(argv[++i]);
     else if (!strcmp(argv[i], "-l")) opt_lenient = 1;
+    else if (!strcmp(argv[i], "-s")) opt_short = 1;
     else if (!strcmp(argv[i], "-x")) opt_leave_open = 1;
     else if (argv[i][0] != '-' && nm < 16) modes[nm++] = argv[i];
     else { usage(); return 2; }

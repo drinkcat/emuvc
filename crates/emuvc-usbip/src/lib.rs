@@ -20,7 +20,10 @@
 //! `RET_UNLINK(-ECONNRESET)` and its `RET_SUBMIT` is suppressed; one that
 //! already completed answers `RET_UNLINK(0)`. Malformed input closes the
 //! connection (with a log line); on disconnect all pending URBs are cancelled
-//! and the device is released.
+//! and the device is released. A device that goes away (a URB completes or
+//! fails with `NoDevice`) closes the connection once the replies before are
+//! out, as usbip-host does when its device is unplugged: vhci-hcd reports it
+//! as a disconnect.
 //!
 //! The client half ([`list`], [`import`]) is used by the tests and by
 //! [`attach_vhci`], which hands an imported socket to the kernel's `vhci-hcd`

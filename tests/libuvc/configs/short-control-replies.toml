@@ -1,0 +1,8 @@
+# Every class-specific GET request to the VideoControl interface replies with no data. The typed controls
+# must all fail: a zero-length reply is neither a value nor success.
+[[device]]
+model = "synthetic"
+
+[[device.fault]]
+on = { control = { request_type = 0xa1, interface = 0 } }
+action = { truncate = 0 }

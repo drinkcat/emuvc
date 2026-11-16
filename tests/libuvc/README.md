@@ -59,12 +59,12 @@ Runs libuvc (built out of tree, never modified) against the emuvc libusb shim
 
 ## API coverage (`api_test.c`) and `scripts/libuvc-coverage.sh`
 
-`api_test [-d VID:PID] [-n INDEX] [-m MS] [-l] MODE...` exercises libuvc's public API
+`api_test [-d VID:PID] [-n INDEX] [-m MS] [-l] [-s] MODE...` exercises libuvc's public API
 (modes: `info controls convert poll still multi status async negotiate wrap open`, or `all`;
 `open` only lists, finds and opens the device, and prints the outcome for the descriptor cases, with
 the active configuration and the bcdUVC libuvc parsed; with `-x` it leaves the device open for
-`uvc_exit()` to close; `absent`, not part of `all`, calls the typed
-controls of the units the device lacks, which must fail cleanly; `soak`, not part of `all` either,
+`uvc_exit()` to close; `absent`, not part of `all`, calls every typed
+control (getters and setters) of the units the device lacks, which must all fail; `soak`, not part of `all` either,
 opens, streams, stops and closes 20 times in one context; `stillbig`, explicit too, triggers a method 2
 still larger than the video frames, which must arrive whole). It discovers
 what the device offers through libuvc itself (formats, units, extension units, still
@@ -92,8 +92,10 @@ control STALL with "not ready" until the Control Change interrupt arrives. That 
 either the new value or a failure code. `configs/synthetic-async.toml` makes brightness slow and
 contrast fail (`[[device.control]]`). `configs/status-edge.toml` sends malformed and reserved
 status packets, then well-formed ones that must still reach the callbacks.
-`-l` (lenient) counts failed expectations as soft, for fault-injection configs. Each mode
-prints `RESULT mode=.. ok=.. soft=.. fail=..`. Cases: `api-*` in `libuvc-test.sh`.
+`-l` (lenient) counts failed expectations as soft, for fault-injection configs. `-s` (short
+replies) requires every typed control to fail, for configs whose control replies are all short
+(`configs/short-control-replies.toml`). Each mode prints `RESULT mode=.. ok=.. soft=.. fail=..`.
+Cases: `api-*` in `libuvc-test.sh`.
 
     scripts/libuvc-coverage.sh [--functions] [--uncovered FILE.c] [--markdown FILE] [--html DIR] [-k PATTERN] [-v]
 
