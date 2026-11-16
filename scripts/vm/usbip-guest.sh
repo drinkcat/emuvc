@@ -39,76 +39,20 @@ check "$STREAM_TEST" -f yuyv -s 640x480 -r 30 -n 30 -t 20 --max-gaps 2
 check "$STREAM_TEST" -f mjpeg -s 1280x720 -r 30 -n 30 -t 20 --max-gaps 2
 check "$STREAM_TEST" --controls
 
-step "SuperSpeed synthetic camera (vhci SuperSpeed port)"
-EMUVC_LOG="${EMUVC_LOG:-info}" "$EMUVC" usbip --listen 127.0.0.1:3241 \
-  -c "$ROOT/tests/libuvc/configs/synthetic-iso-ss.toml" >/tmp/usbip-ss.log 2>&1 &
-for i in 1 2 3 4 5 6 7 8 9 10; do
-  "$EMUVC" usbip-attach --server 127.0.0.1:3241 1-1 && break
-  sleep 0.2
-done
-ssdev=
-for i in $(seq 100); do
-  for n in /sys/class/video4linux/video*; do
-    grep -q Synthetic "$n/name" 2>/dev/null && [ -z "$ssdev" ] && ssdev=/dev/$(basename "$n")
-  done
-  [ -n "$ssdev" ] && break
-  sleep 0.1
-done
-lsusb -t | grep -i -B1 -A2 "5000M" | head -8
-check test -n "$ssdev"
-check v4l2-ctl -d "$ssdev" --set-fmt-video=width=640,height=480,pixelformat=YUYV \
-  --stream-mmap=4 --stream-count=30 --stream-to=/tmp/ss.yuyv
-check "$EMUVC" check-frames -f yuyv -s 640x480 /tmp/ss.yuyv
-tail -n 4 /tmp/usbip-ss.log
-
-# Logitech C930e: the kernel takes configuration index 0, UVC 1.0 on the real camera. The -uvc15
-# variant only has the UVC 1.5 configuration (encoding unit, H.264 interface). uvcvideo must stream
-# YUYV either way.
-port=3242
-for model in logitech-046d-0843 logitech-046d-0843-uvc15; do
-  step "$model"
-  before=$(grep -l C930e /sys/class/video4linux/video*/name 2>/dev/null || true)
-  EMUVC_LOG="${EMUVC_LOG:-info}" "$EMUVC" usbip --listen 127.0.0.1:$port -d $model \
-    >/tmp/usbip-$model.log 2>&1 &
-  for i in 1 2 3 4 5 6 7 8 9 10; do
-    "$EMUVC" usbip-attach --server 127.0.0.1:$port 1-1 && break
-    sleep 0.2
-  done
-  port=$((port + 1))
-  cdev=
-  for i in $(seq 100); do
-    for n in /sys/class/video4linux/video*; do
-      grep -q C930e "$n/name" 2>/dev/null && ! echo "$before" | grep -qx "$n/name" &&
-        [ -z "$cdev" ] && cdev=/dev/$(basename "$n")
-    done
-    [ -n "$cdev" ] && break
-    sleep 0.1
-  done
-  check test -n "$cdev"
-  grep -l 0843 /sys/bus/usb/devices/*/idProduct | while read -r f; do
-    echo "$(dirname "$f"): bConfigurationValue $(cat "$(dirname "$f")/bConfigurationValue")"
-  done
-  v4l2-ctl -d "$cdev" --list-formats
-  dmesg | grep -i "C930e\|0843" | tail -n 4
-  check v4l2-ctl -d "$cdev" --set-fmt-video=width=640,height=480,pixelformat=YUYV \
-    --stream-mmap=4 --stream-count=30 --stream-to=/tmp/c930e.yuyv
-  check "$EMUVC" check-frames -f yuyv -s 640x480 /tmp/c930e.yuyv
-done
-
-# uvcvideo as the reference for the libuvc cases that say it copes (tests/libuvc/configs).
-step "Luxvisions IR function (libuvc: api-second-function)"
-# uvcvideo binds both functions: video devices hang off the IR function's VideoControl interface (2).
-check sh -c 'for n in /sys/class/video4linux/*; do readlink -f "$n/device"; done | grep -q "1-1:1\.2$"'
-
-# serve CONFIG PATTERN: serves a configuration on the next port and attaches it; $dev is its first new
-# video device whose name matches PATTERN (the capture one: metadata devices come after it), $srv the
-# server's PID (killing it detaches the device and frees the vhci port).
+# serve CONFIG|SPEC PATTERN: serves a configuration (tests/libuvc/configs/CONFIG.toml) or a device (a model,
+# lsusb:DUMP...) on the next port and attaches it; $dev is its first new video device whose name matches
+# PATTERN (the capture one: metadata devices come after it), $srv the server's PID (killing it detaches the
+# device and frees the vhci port). The server logs to /tmp/usbip-NAME.log (NAME: CONFIG, or the spec's base
+# name).
 port=3250
 serve() {
   cfg=$1 pat=$2
+  src="-d $cfg"
+  [ -f "$ROOT/tests/libuvc/configs/$cfg.toml" ] && src="-c $ROOT/tests/libuvc/configs/$cfg.toml"
   before=$(ls /sys/class/video4linux)
-  EMUVC_LOG="${EMUVC_LOG:-info}" "$EMUVC" usbip --listen 127.0.0.1:$port \
-    -c "$ROOT/tests/libuvc/configs/$cfg.toml" >/tmp/usbip-$cfg.log 2>&1 &
+  # shellcheck disable=SC2086
+  EMUVC_LOG="${EMUVC_LOG:-info}" "$EMUVC" usbip --listen 127.0.0.1:$port $src \
+    >"/tmp/usbip-$(basename "$cfg" .txt).log" 2>&1 &
   srv=$!
   for i in 1 2 3 4 5 6 7 8 9 10; do
     "$EMUVC" usbip-attach --server 127.0.0.1:$port 1-1 && break
@@ -138,22 +82,78 @@ stats_ok() {
   done
   ! grep -q '^invalid: *[1-9]' "$@"
 }
-# yuyv CONFIG PATTERN: 30 YUYV 640x480 frames through uvcvideo, stamps checked (gaps are allowed).
-yuyv() {
-  step "uvcvideo: $1"
-  serve "$1" "$2"
+# libuvc_stream VID:PID ARGS...: stream_test through libuvc and the real libusb (libuvc detaches uvcvideo from
+# the camera, and attaches it back when it closes).
+libuvc_stream() { check timeout 40 "$STREAM_TEST" -d "$@"; }
+# yuyv_checks NAME [VID:PID [FPS]]: 30 YUYV 640x480 frames from $dev through uvcvideo, stamps checked (gaps
+# are allowed); with VID:PID, then through libuvc and the real libusb (at FPS, 30 by default).
+yuyv_checks() {
   [ -n "$dev" ] && check timeout 30 v4l2-ctl -d "$dev" --set-fmt-video=width=640,height=480,pixelformat=YUYV \
     --stream-mmap=4 --stream-count=30 --stream-to=/tmp/$1.yuyv && check "$EMUVC" check-frames -f yuyv -s 640x480 /tmp/$1.yuyv &&
     check stats_ok "$dev"
+  [ -n "${2:-}" ] && libuvc_stream "$2" -f yuyv -s 640x480 -r "${3:-30}" -n 30 -t 20 --max-gaps 2
+}
+# yuyv CONFIG PATTERN [VID:PID]: yuyv_checks on a served configuration.
+yuyv() {
+  step "uvcvideo: $1"
+  serve "$1" "$2"
+  yuyv_checks "$1" "${3:-}"
   dmesg | grep -i "uvcvideo" | tail -n 2
   unserve
 }
+# camera DUMP PATTERN VID:PID FPS: yuyv_checks on a real camera, emulated from its lsusb -v dump (libuvc's
+# cameras/, in tests/fixtures/lsusb/libuvc-cameras).
+camera() {
+  step "camera: $1"
+  serve "lsusb:$ROOT/tests/fixtures/lsusb/libuvc-cameras/$1.txt" "$2"
+  yuyv_checks "$1" "$3" "$4"
+  dmesg | grep -i "uvcvideo" | tail -n 2
+  unserve
+}
+
+step "SuperSpeed synthetic camera (vhci SuperSpeed port)"
+serve synthetic-iso-ss Synthetic
+lsusb -t | grep -i -B1 -A2 "5000M" | head -8
+[ -n "$dev" ] && check timeout 30 v4l2-ctl -d "$dev" --set-fmt-video=width=640,height=480,pixelformat=YUYV \
+  --stream-mmap=4 --stream-count=30 --stream-to=/tmp/ss.yuyv && check "$EMUVC" check-frames -f yuyv -s 640x480 /tmp/ss.yuyv
+# libuvc sizes SuperSpeed packets from wBytesPerInterval (bursts: libuvc#270), so it picks the 4096-byte alt.
+libuvc_stream 1209:0001 -f yuyv -s 640x480 -r 30 -n 30 -t 20 --max-gaps 2
+check sh -c "grep 'start streaming' /tmp/usbip-synthetic-iso-ss.log | tail -n 1 | grep '4096 bytes/payload'"
+unserve
+# Logitech C930e: the kernel takes configuration index 0, UVC 1.0 on the real camera. The -uvc15 variant only
+# has the UVC 1.5 configuration (encoding unit, H.264 interface). uvcvideo and libuvc must stream YUYV
+# either way.
+for model in logitech-046d-0843 logitech-046d-0843-uvc15; do
+  step "$model"
+  serve "$model" C930e
+  grep -l 0843 /sys/bus/usb/devices/*/idProduct | while read -r f; do
+    echo "$(dirname "$f"): bConfigurationValue $(cat "$(dirname "$f")/bConfigurationValue")"
+  done
+  [ -n "$dev" ] && v4l2-ctl -d "$dev" --list-formats
+  dmesg | grep -i "C930e\|0843" | tail -n 4
+  [ -n "$dev" ] && check timeout 30 v4l2-ctl -d "$dev" --set-fmt-video=width=640,height=480,pixelformat=YUYV \
+    --stream-mmap=4 --stream-count=30 --stream-to=/tmp/c930e.yuyv && check "$EMUVC" check-frames -f yuyv -s 640x480 /tmp/c930e.yuyv
+  libuvc_stream 046d:0843 -f yuyv -s 640x480 -r 30 -n 30 -t 20 --max-gaps 2
+  unserve
+done
+# Real cameras from their lsusb -v dumps: the C920 (H.264 next to YUYV), the LifeCam Show (YUYV 640x480 at
+# 15 fps only, interval 666667: libuvc finds it at 14 fps, libuvc#297) and the QuickCam Pro 9000 (a vendor
+# descriptor among the VideoControl ones, no product string: uvcvideo names it by VID:PID).
+camera logitech_hd_pro_920 C920 046d:082d 30
+camera ms_lifecam_show LifeCam 045e:0729 14
+camera quickcampro9000 046d:0809 046d:0809 30
+
+# uvcvideo as the reference for the libuvc cases that say it copes (tests/libuvc/configs).
+step "Luxvisions IR function (libuvc: api-second-function)"
+# uvcvideo binds both functions: video devices hang off the IR function's VideoControl interface (2).
+check sh -c 'for n in /sys/class/video4linux/*; do readlink -f "$n/device"; done | grep -q "1-1:1\.2$"'
+
 yuyv need-set-interface "Integrated RGB"    # needs SET_INTERFACE before class requests
 yuyv probe-zero-index "Integrated RGB"      # probe reply with format/frame index 0
 yuyv max-payload-huge "Integrated RGB"      # dwMaxPayloadTransferSize 0xffff0400
 yuyv desc-composite-input Synthetic         # an 8-byte composite input terminal
 yuyv desc-bcduvc-0101 Synthetic             # bcdUVC 0x0101
-yuyv isight Synthetic                       # the built-in iSight's packet format
+yuyv isight Synthetic 05ac:8501             # the built-in iSight's packet format
 yuyv quickcam-vendor-class Synthetic        # vendor-specific interface classes, by VID/PID
 # ERR on one payload: uvcvideo drops the frame with nodrop=0, the others are intact.
 echo 0 >/sys/module/uvcvideo/parameters/nodrop 2>/dev/null
@@ -177,7 +177,7 @@ serve eof-payload-no-fid "Integrated RGB"
 unserve
 
 # Bulk streaming through uvcvideo, whose URBs (16 KiB) are smaller than the payloads (32 KiB).
-yuyv synthetic-bulk-hs Synthetic
+yuyv synthetic-bulk-hs Synthetic 1209:0001
 yuyv desc-cs-after-endpoint Synthetic       # VS descriptors after the bulk endpoint (Ecamm Pico iMage)
 # A bulk camera that stops only on CLEAR_FEATURE(ENDPOINT_HALT) (libuvc#257): uvcvideo stops bulk streams
 # that way, so a second capture works.
@@ -208,6 +208,31 @@ unserve
 # Unplugged mid-stream (unplug.toml): the server closes the connection, as usbip-host does when its device
 # goes away, and vhci-hcd reports the disconnect. Neither uvcvideo's client nor libuvc through the real
 # libusb may hang then (libuvc#152, #53: stop and close after an unplug).
+# Two streaming interfaces of one camera at once (synthetic-uvc11-2streams.toml): uvcvideo makes a capture
+# node of each, and both must deliver intact frames while the other streams.
+step "uvcvideo: two streams at once"
+serve synthetic-uvc11-2streams Synthetic
+cap1= cap2=
+for n in $(ls /sys/class/video4linux | sort -V); do
+  echo "$before" | grep -qx "$n" && continue
+  v4l2-ctl -d "/dev/$n" -D 2>/dev/null | sed -n '/Device Caps/,$p' | grep -q "Video Capture" || continue
+  if [ -z "$cap1" ]; then cap1=/dev/$n; elif [ -z "$cap2" ]; then cap2=/dev/$n; fi
+done
+check test -n "$cap2"
+if [ -n "$cap2" ]; then
+  timeout 30 v4l2-ctl -d "$cap2" --set-fmt-video=width=640,height=480,pixelformat=YUYV --stream-mmap=4 \
+    --stream-count=60 --stream-to=/tmp/stream2.yuyv >/dev/null 2>&1 &
+  second=$!
+  check timeout 30 v4l2-ctl -d "$cap1" --set-fmt-video=width=640,height=480,pixelformat=YUYV --stream-mmap=4 \
+    --stream-count=60 --stream-to=/tmp/stream1.yuyv
+  check wait "$second"
+  check "$EMUVC" check-frames -f yuyv -s 640x480 /tmp/stream1.yuyv
+  check "$EMUVC" check-frames -f yuyv -s 640x480 /tmp/stream2.yuyv
+  check stats_ok "$cap1"
+fi
+grep -E "start streaming|stop streaming" /tmp/usbip-synthetic-uvc11-2streams.log | tail -n 4
+unserve
+
 disconnects() { dmesg | grep -c "USB disconnect"; }
 step "uvcvideo: unplugged while streaming"
 unplugs=$(disconnects)

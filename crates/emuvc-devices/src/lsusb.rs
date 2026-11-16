@@ -12,6 +12,10 @@
 //!   `bLength` is too short: "Warning: Descriptor too short") is absent from
 //!   the bytes: each descriptor is truncated or zero padded to its `bLength`.
 //! - `** UNRECOGNIZED: xx xx ...` lines are copied verbatim.
+//! - Old lsusb printed a still image frame's bNumImageSizePatterns again where
+//!   bNumCompressionPatterns belongs, then as many `bCompression` values as the
+//!   real count: when `bLength` holds exactly those values, their number is the
+//!   count.
 //! - lsusb only prints up to 4 bytes of `bmControls` for terminals/units and
 //!   `bmaControls` of video streaming headers; longer bitmaps are zero padded.
 //! - Descriptors lsusb decodes but this module can't rebuild (e.g. MIDI, CDC,
@@ -721,14 +725,24 @@ fn video_streaming(b: &Block) -> Result<Vec<u8>, String> {
             }
         }
         3 => {
-            w.u8(b.n(&ep)).u8(b.n(&["bNumImageSizePatterns"]));
+            let sizes = b.n(&["bNumImageSizePatterns"]);
+            w.u8(b.n(&ep)).u8(sizes);
             let (ws, hs) = (b.indexed("wWidth"), b.indexed("wHeight"));
             for (x, y) in ws.iter().zip(&hs) {
                 w.u16(parse_num(x).unwrap_or(0))
                     .u16(parse_num(y).unwrap_or(0));
             }
-            w.u8(b.n(&["bNumCompressionPatterns"]));
-            for c in b.indexed("bCompression") {
+            // Old lsusb printed bNumImageSizePatterns here, then the real count's values.
+            let comps = b.indexed("bCompression");
+            let printed = b.n(&["bNumCompressionPatterns"]);
+            let n = comps.len() as u64;
+            let count = if printed != n && b.n(&["bLength"]) == 6 + 4 * sizes + n {
+                n
+            } else {
+                printed
+            };
+            w.u8(count);
+            for c in comps {
                 w.u8(parse_num(c).unwrap_or(0));
             }
         }
