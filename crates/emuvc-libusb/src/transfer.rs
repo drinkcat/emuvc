@@ -228,6 +228,11 @@ pub unsafe extern "C" fn libusb_cancel_transfer(transfer: *mut libusb_transfer) 
         let Some(h) = handle_ref((*transfer).dev_handle) else {
             return LIBUSB_ERROR_INVALID_PARAM;
         };
+        // Like libusb on Linux: discarding the URB of a device that's gone fails with ENODEV, and
+        // the transfer completes with LIBUSB_TRANSFER_NO_DEVICE (the engine already completed it).
+        if !h.info().connected() {
+            return LIBUSB_ERROR_NO_DEVICE;
+        }
         h.host().cancel(b.urb.load(Ordering::Acquire));
         LIBUSB_SUCCESS
     }

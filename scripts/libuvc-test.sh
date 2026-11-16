@@ -394,6 +394,11 @@ done
 # alt 0 to release a streaming interface at close. libuvc may fail, but cleanly (and without leaks under ASan).
 CHECK_RE='^RESULT mode=controls ' TEST_BIN=api_test run_case api-disconnect-on-set robust EMUVC_CONFIG="$CFG/disconnect-on-set.toml" $V -- -l controls
 CHECK_RE='^RESULT mode=poll ' TEST_BIN=api_test run_case api-disconnect-on-close robust EMUVC_CONFIG="$CFG/disconnect-on-close.toml" -- -l poll
+# Unplugged mid-stream with a frame callback (unplug.toml, which the VM test also runs through the real libusb):
+# libuvc must give up cleanly. As on Linux, the transfers complete with LIBUSB_TRANSFER_NO_DEVICE, and
+# cancelling one fails with NO_DEVICE.
+CHECK_RE='disconnected itself' run_case unplug-while-streaming robust EMUVC_LOG=emuvc_usb::host=warn EMUVC_CONFIG="$CFG/unplug.toml" -- \
+  -d 1209:0002 -f yuyv -s 640x480 -r 30 -n 300 -t 5
 # Open, stream, stop and close, 20 rounds in one context. libuvc stops its event thread when the last
 # device closes, and never resets kill_handler_thread: after a reopen the new event thread exits at once,
 # the streams get no data and uvc_stop_streaming() waits forever. The hang is the bug (BUG_CRASH).
