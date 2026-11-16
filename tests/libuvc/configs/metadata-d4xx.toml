@@ -1,0 +1,8 @@
+# For the VM test: the synthetic camera with an Intel RealSense D435's IDs (8086:0b07) and UVC 1.1 (interface
+# protocol 0), for which uvcvideo copies each payload's whole header to its metadata node
+# (V4L2_META_FMT_D4XX), metadata included. The header of header-metadata-every-other.toml: 8 bytes of metadata
+# after PTS and SCR, the frame index first, in the payloads of even frames only.
+[[device]]
+model = "synthetic"
+synthetic = { vendor_id = 0x8086, product_id = 0x0b07, uvc = "1.1", formats = ["yuyv"], sizes = [[640, 480]], fps = [30] }
+uvc = { header_len = 20, no_metadata_every = 2 }

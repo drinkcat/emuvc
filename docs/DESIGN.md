@@ -179,7 +179,8 @@ in a throwaway VM: kernel enumeration through vhci-hcd, uvcvideo streaming
   to, so the branch figure is a guide to untested paths
   (`--uncovered-branches FILE.c`), not a target.
 - `emuvc selftest`; `emuvc check-frames` (raw captures, e.g. from
-  `v4l2-ctl --stream-to`); `emuvc run -- lsusb -v` (diff against the real device).
+  `v4l2-ctl --stream-to`); `emuvc check-meta` (captures from uvcvideo's metadata node, in a format that
+  copies whole payload headers); `emuvc run -- lsusb -v` (diff against the real device).
 
 ## Future work
 - More real models (from bug reports via the lsusb importer).

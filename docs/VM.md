@@ -45,4 +45,7 @@ that needs SET_INTERFACE first, zero format/frame indexes, a huge dwMaxPayloadTr
 input terminal, bcdUVC 0x0101, the iSight, vendor-class QuickCams, ERR on one payload with
 `nodrop=0`, overlong frames flagged as errors, EOF only in empty payloads with
 `UVC_QUIRK_STREAM_NO_FID`) and captures through uvcvideo, the reference. Each server is stopped after
-its check, which frees its vhci port.
+its check, which frees its vhci port. A camera with an Intel D435's IDs gets uvcvideo's D4XX metadata
+format, whole payload headers on its metadata node: `emuvc check-meta` checks that every frame carries
+its own index as metadata, or none (here every other frame, as in `header-metadata-every-other`), and that
+the SCR's clock agrees with its SOF counter.
