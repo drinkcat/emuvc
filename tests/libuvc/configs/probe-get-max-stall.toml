@@ -1,0 +1,8 @@
+# GET_MAX of the probe control stalls (libuvc#242: a camera that only negotiates when
+# uvc_get_stream_ctrl_format_size() is called twice). libuvc takes the fields it doesn't negotiate from that
+# reply, and goes on without it.
+[[device]]
+model = "synthetic"
+[[device.fault]]
+on = { control = { request = 0x83, selector = 1, interface = 1 } }
+action = "stall"
