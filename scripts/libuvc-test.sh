@@ -208,7 +208,7 @@ done
 # Misbehaving devices: -l counts failed expectations as soft; crashes and hangs still fail.
 for c in err-bit drop-truncate header-2 header-lie header-lie-scr header-len-0 header-len-1 mjpeg-no-eof-no-fid \
          probe-len-34-strict ignore-format iso-faults disconnect bogus-header bulk-faults probe-small-frame-size \
-         probe-bogus-frame probe-no-frame-size-h264; do
+         probe-bogus-frame probe-no-frame-size-h264 empty-frames mjpeg-no-soi; do
   CHECK_RE='^RESULT mode=negotiate ' run_api "api-fault-$c" EMUVC_CONFIG="$CFG/$c.toml" -- -l poll still status negotiate
 done
 
@@ -361,6 +361,8 @@ done
 for c in desc-no-input-header desc-vc-no-streaming; do
   run_api_robust "api-$c" EMUVC_CONFIG="$CFG/$c.toml" $V
 done
+# MJPEG frames without SOI through the converters (libjpeg's error handling must recover cleanly)
+CHECK_RE='^RESULT mode=convert ' TEST_BIN=api_test run_case api-mjpeg-no-soi-convert robust EMUVC_CONFIG="$CFG/mjpeg-no-soi.toml" $V -- -l convert
 # descriptor values at the edges: continuous intervals with min above max, 0 bits per pixel,
 # 65535x65535 frames (sizes overflow 32 bits), a 0x0 frame
 for c in desc-interval-range-inverted desc-zero-bpp desc-huge-size; do

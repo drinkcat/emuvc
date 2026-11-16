@@ -1,5 +1,6 @@
-# The probe reply has bFormatIndex 0 and bFrameIndex 0 (some Fuji cameras); uvcvideo keeps the
-# format it asked for. The device streams what was committed.
+# Probe and commit replies say bFormatIndex 0 and bFrameIndex 0 (the Fuji Finepix), and a commit with
+# 0 keeps the probed format. uvcvideo keeps the format it asked for (uvc_v4l2_try_format) and commits
+# what the device replied.
 [[device]]
 model = "luxvisions-30c9-0052"
-uvc = { probe_cur = { format_index = 0, frame_index = 0 } }
+uvc = { zero_index_replies = true }

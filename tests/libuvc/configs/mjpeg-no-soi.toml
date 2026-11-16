@@ -1,0 +1,5 @@
+# MJPEG frames without their SOI marker (FF D8): a JPEG decoder must reject them cleanly (libuvc's
+# uvc_mjpeg2rgb and friends go through libjpeg's error handler).
+[[device]]
+model = "luxvisions-30c9-0052"
+uvc = { mjpeg_strip_soi = true }

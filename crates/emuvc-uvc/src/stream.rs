@@ -208,6 +208,10 @@ pub struct StreamQuirks {
     /// Append this many junk bytes to every video frame, before EOF: frames longer than
     /// their format says (uvcvideo flags such uncompressed frames as erroneous).
     pub frame_extra: u32,
+    /// Send MJPEG frames without their SOI marker (the first two bytes, FF D8).
+    pub mjpeg_strip_soi: bool,
+    /// Every Nth video frame carries no data: a header-only payload with EOF.
+    pub empty_every: Option<u32>,
     /// Restrict err/drop/truncate_every to the first N frames of each stream
     /// (e.g. cameras sending garbage while the sensor starts).
     pub only_first_frames: Option<u64>,
@@ -235,6 +239,10 @@ pub struct StreamQuirks {
     pub need_set_interface: bool,
     /// Negotiate the default format/frame whatever the host asks for.
     pub ignore_probe_format: bool,
+    /// Probe and commit replies say bFormatIndex/bFrameIndex 0, and a commit with 0 keeps the
+    /// probed format and frame (the Fuji Finepix; uvcvideo's uvc_video_init fixes the indexes
+    /// up, and it commits what the device replied).
+    pub zero_index_replies: bool,
     /// Delay before the first frame after streaming starts.
     pub startup_ms: u32,
     /// Device clock (PTS/SCR) misbehaviour.
@@ -581,6 +589,10 @@ impl VsInterface {
     /// The structure as the device reports it (quirks applied).
     fn report(&self, c: &StreamingControl, which: Report) -> Vec<u8> {
         let mut c = c.clone();
+        if self.quirks.zero_index_replies {
+            c.format_index = 0;
+            c.frame_index = 0;
+        }
         if let Some(m) = self.quirks.max_payload_transfer_size {
             c.max_payload_transfer_size = m;
         }
@@ -738,7 +750,11 @@ impl VsInterface {
             }
             (VS_PROBE_CONTROL | VS_COMMIT_CONTROL, GET_INFO) => Ok(vec![INFO_GET | INFO_SET]),
             (VS_COMMIT_CONTROL, SET_CUR) => {
-                let req = StreamingControl::from_bytes(data);
+                let mut req = StreamingControl::from_bytes(data);
+                if self.quirks.zero_index_replies && req.format_index == 0 && req.frame_index == 0 {
+                    req.format_index = self.probe.format_index;
+                    req.frame_index = self.probe.frame_index;
+                }
                 let c = self.negotiate(&req, true)?;
                 info!(
                     "{}: commit format {} frame {} interval {}",
@@ -1017,6 +1033,7 @@ impl VsInterface {
             return;
         }
         let truncate = every(self.quirks.truncate_every);
+        let empty = every(self.quirks.empty_every);
         let error = every(self.quirks.err_every);
         let error_mid = every(self.quirks.err_payload);
         let captured_ns = st.start_ns + latest * st.interval_ns;
@@ -1049,6 +1066,12 @@ impl VsInterface {
         }
         if error_mid {
             tx.error_at = Some(tx.data.len() / 2);
+        }
+        if !tx.still && self.quirks.mjpeg_strip_soi && spec.format == PixelFormat::Mjpeg {
+            tx.data.drain(..tx.data.len().min(2));
+        }
+        if !tx.still && empty {
+            tx.data.clear();
         }
         if !tx.still && self.quirks.frame_extra > 0 {
             let n = tx.data.len() + self.quirks.frame_extra as usize;
