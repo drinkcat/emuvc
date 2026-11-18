@@ -313,6 +313,12 @@ CHECK_RE='^RESULT mode=controls ' TEST_BIN=api_test run_case api-short-control-r
 CHECK_RE='^RESULT mode=info ' TEST_BIN=api_test run_case api-desc-zero-interval pass EMUVC_CONFIG="$CFG/desc-zero-interval.toml" $V -- info
 BUG="libuvc#297: uvc_get_stream_ctrl_format_size() truncates 10000000 / interval, so 416667 (24 fps) isn't found at 24 fps" \
   CHECK_RE='^RESULT mode=negotiate ' TEST_BIN=api_test run_case api-issue-297-24fps bug EMUVC_CONFIG="$CFG/issue-297-24fps.toml" $V -- negotiate
+# Every frame of a high-speed camera above 250 fps (libuvc#267's ELP runs at 260): libuvc's isochronous
+# transfers are 32 packets, 4 ms at high speed, and when one completes two frames, the frame libuvc hands
+# over is only the second. With an instant consumer (api_test rate, real-time clock), 1 frame in 6 is lost at
+# 300 fps, whatever the host.
+BUG="libuvc hands over at most one frame per isochronous transfer (32 packets, 4 ms at high speed): above 250 fps it loses 1 - 250/fps of the frames, whatever the consumer" \
+  CHECK_RE='^RESULT mode=rate ' TEST_BIN=api_test run_case api-high-fps-300 bug EMUVC_CONFIG="$CFG/high-fps-300.toml" -- rate
 # The same on a real camera (its lsusb -v dump, from libuvc's cameras/): the Microsoft LifeCam Show has YUYV
 # 640x480 at 666667 only, 15 fps, which libuvc finds at 14 fps.
 BUG="libuvc#297: the LifeCam Show's only YUYV 640x480 interval, 666667 (15 fps), isn't found at 15 fps" \

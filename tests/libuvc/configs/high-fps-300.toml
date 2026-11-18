@@ -1,0 +1,5 @@
+# A high-speed MJPEG camera at 300 fps, at 640x360 like libuvc#267's ELP (dwMaxVideoFrameSize 460800): libuvc's
+# isochronous transfers are 32 packets of 3072 bytes, 4 ms, longer than the 3.33 ms frame interval.
+[[device]]
+model = "synthetic"
+synthetic = { formats = ["mjpeg"], sizes = [[640, 360]], fps = [300] }
