@@ -94,6 +94,11 @@ neither send them in SET_CUR(PROBE) (the emulated camera echoes wKeyFrameRate, w
 wCompWindowSize) nor return them as negotiated. `leftovers`, explicit, runs only this check, for devices
 that fail probe requests (`configs/probe-*-stall.toml`), whose other `negotiate` checks would fail too. `still` checks that a method 2 trigger yields exactly one frame of the
 still size before video frames resume.
+`autoupdate`, explicit, switches each automatic mode on in turn (AE, auto focus, auto white balance, auto hue,
+auto contrast), the others off, when the control it drives is autoupdate (GET_INFO D3). The camera must
+report that control's changes with Control Change interrupts, and libuvc must hand them to the status
+callback with the control's size; once the mode is off, the changes stop, and the last one reported is the
+control's value (`configs/auto-drift.toml`: the synthetic camera's auto modes move their controls every 100 ms).
 `async` sets every asynchronous camera terminal or processing unit control (GET_INFO D4) and
 expects the UVC 1.5 2.4.4 flow. The SET_CUR is accepted at once, and GET_CUR/SET_CUR on that
 control STALL with "not ready" until the Control Change interrupt arrives. That interrupt carries

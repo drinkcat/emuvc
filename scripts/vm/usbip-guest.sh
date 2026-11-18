@@ -243,6 +243,25 @@ if [ -n "$dev" ]; then
 fi
 unserve
 
+# Automatic modes that move their controls (auto-drift.toml, every 100 ms), each change reported with a
+# Control Change interrupt: uvcvideo makes control events of them (libuvc: api-autoupdate). Auto exposure
+# (aperture priority) is on by default. uvcvideo reads the status endpoint while the camera is open.
+step "uvcvideo: auto exposure moves exposure_time_absolute"
+serve auto-drift Synthetic
+if [ -n "$dev" ]; then
+  timeout 20 v4l2-ctl -d "$dev" --set-fmt-video=width=640,height=480,pixelformat=YUYV --stream-mmap=4 \
+    --stream-count=300 >/dev/null 2>&1 &
+  capture=$!
+  # Three changes in a row: each --wait-for-event exits after the next one (and flushes its output).
+  for i in 1 2 3; do
+    timeout 5 v4l2-ctl -d "$dev" --wait-for-event=ctrl=exposure_time_absolute
+  done >/tmp/auto-events.txt 2>&1
+  kill "$capture" 2>/dev/null; wait "$capture" 2>/dev/null
+  grep "value:" /tmp/auto-events.txt
+  check sh -c "test \$(grep 'value:' /tmp/auto-events.txt | sort -u | wc -l) -eq 3"
+fi
+unserve
+
 # Unplugged mid-stream (unplug.toml): the server closes the connection, as usbip-host does when its device
 # goes away, and vhci-hcd reports the disconnect. Neither uvcvideo's client nor libuvc through the real
 # libusb may hang then (libuvc#152, #53: stop and close after an unplug).

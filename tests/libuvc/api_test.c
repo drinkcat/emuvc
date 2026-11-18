@@ -1362,6 +1362,96 @@ static void mode_async(void) {
   printf("RESULT_EXTRA async_ok=%d async_failed=%d\n", n_ok, n_failed);
 }
 
+/* ================= autoupdate ================= */
+/* A camera's automatic modes change the controls they drive, and report each change of an autoupdate
+ * control (GET_INFO D3) with a Control Change interrupt (UVC 1.5 2.4.2.2; configs/auto-drift.toml). One auto
+ * mode at a time, the others off: switched on, its control must report changes, with the control's size;
+ * switched off, the changes stop, and the last one reported is the control's value. */
+static const struct {
+  const char *name;
+  int pu; /* processing unit, else camera terminal */
+  uint8_t auto_sel, sel, len;
+} AUTOS[] = {
+  {"auto exposure", 0, UVC_CT_AE_MODE_CONTROL, UVC_CT_EXPOSURE_TIME_ABSOLUTE_CONTROL, 4},
+  {"auto focus", 0, UVC_CT_FOCUS_AUTO_CONTROL, UVC_CT_FOCUS_ABSOLUTE_CONTROL, 2},
+  {"auto white balance", 1, UVC_PU_WHITE_BALANCE_TEMPERATURE_AUTO_CONTROL, UVC_PU_WHITE_BALANCE_TEMPERATURE_CONTROL, 2},
+  {"auto white balance components", 1, UVC_PU_WHITE_BALANCE_COMPONENT_AUTO_CONTROL, UVC_PU_WHITE_BALANCE_COMPONENT_CONTROL, 4},
+  {"auto hue", 1, UVC_PU_HUE_AUTO_CONTROL, UVC_PU_HUE_CONTROL, 2},
+  {"auto contrast", 1, UVC_PU_CONTRAST_AUTO_CONTROL, UVC_PU_CONTRAST_CONTROL, 2},
+};
+#define N_AUTOS (int)(sizeof AUTOS / sizeof *AUTOS)
+
+/* Value changes of (class, sel) in evs, and the index of the last one. */
+static int count_changes(enum uvc_status_class c, int sel, int *last) {
+  int n = 0;
+  pthread_mutex_lock(&ev_lock);
+  for (int k = 0; k < n_evs; k++)
+    if (evs[k].c == c && evs[k].sel == sel && evs[k].attr == UVC_STATUS_ATTRIBUTE_VALUE_CHANGE) {
+      n++;
+      if (last) *last = k;
+    }
+  pthread_mutex_unlock(&ev_lock);
+  return n;
+}
+
+static void mode_autoupdate(void) {
+  expect(open_device() == 0, "open device");
+  if (!devh) return;
+  const uvc_input_terminal_t *ct = uvc_get_camera_terminal(devh);
+  const uvc_processing_unit_t *pu = uvc_get_processing_units(devh);
+  uint8_t unit[N_AUTOS] = {0}, on[N_AUTOS], off[N_AUTOS], saved[N_AUTOS];
+  uvc_set_status_callback(devh, status_cb, NULL);
+  /* every auto mode off first, so that only the one under test moves its control */
+  for (int i = 0; i < N_AUTOS; i++) {
+    uint8_t u = AUTOS[i].pu ? (pu ? pu->bUnitID : 0) : (ct ? ct->bTerminalID : 0), info = 0, res = 0x01 | 0x02;
+    if (!u || uvc_get_ctrl(devh, u, AUTOS[i].sel, &info, 1, UVC_GET_INFO) != 1 || !(info & 0x08)) continue;
+    if (uvc_get_ctrl(devh, u, AUTOS[i].auto_sel, &saved[i], 1, UVC_GET_CUR) != 1) continue;
+    /* AE modes (GET_RES: those supported): the exposure time is automatic in 2 (auto) and 8 (aperture
+     * priority), manual in 1 (manual) and 4 (shutter priority) */
+    int ae = AUTOS[i].auto_sel == UVC_CT_AE_MODE_CONTROL;
+    if (ae && uvc_get_ctrl(devh, u, AUTOS[i].auto_sel, &res, 1, UVC_GET_RES) != 1) continue;
+    on[i] = !ae ? 1 : res & 0x02 ? 0x02 : res & 0x08 ? 0x08 : 0;
+    off[i] = !ae ? 0 : res & 0x01 ? 0x01 : res & 0x04 ? 0x04 : 0;
+    if ((ae && (!on[i] || !off[i])) || soft(uvc_set_ctrl(devh, u, AUTOS[i].auto_sel, &off[i], 1)) < 0) continue;
+    unit[i] = u;
+  }
+  usleep(300000);
+  int tested = 0;
+  for (int i = 0; i < N_AUTOS; i++) {
+    if (!unit[i]) continue;
+    enum uvc_status_class c = AUTOS[i].pu ? UVC_STATUS_CLASS_CONTROL_PROCESSING : UVC_STATUS_CLASS_CONTROL_CAMERA;
+    pthread_mutex_lock(&ev_lock);
+    n_evs = 0;
+    pthread_mutex_unlock(&ev_lock);
+    if (soft(uvc_set_ctrl(devh, unit[i], AUTOS[i].auto_sel, &on[i], 1)) < 0) continue;
+    tested++;
+    int a = wait_control_event(c, AUTOS[i].sel, 0), b = a < 0 ? -1 : wait_control_event(c, AUTOS[i].sel, a + 1);
+    expect(b >= 0, "%s: its control reports changes (%s)", AUTOS[i].name, a < 0 ? "none" : "only one");
+    soft(uvc_set_ctrl(devh, unit[i], AUTOS[i].auto_sel, &off[i], 1));
+    usleep(300000); /* the changes queued before arrive */
+    uint8_t cur[8] = {0};
+    int r = uvc_get_ctrl(devh, unit[i], AUTOS[i].sel, cur, AUTOS[i].len, UVC_GET_CUR), last = -1, badlen = 0;
+    int n = count_changes(c, AUTOS[i].sel, &last);
+    pthread_mutex_lock(&ev_lock);
+    for (int k = 0; k < n_evs; k++)
+      badlen += evs[k].c == c && evs[k].sel == AUTOS[i].sel && evs[k].attr == UVC_STATUS_ATTRIBUTE_VALUE_CHANGE &&
+                evs[k].len != AUTOS[i].len;
+    int same = last >= 0 && r == AUTOS[i].len && evs[last].len == AUTOS[i].len && !memcmp(evs[last].data, cur, AUTOS[i].len);
+    pthread_mutex_unlock(&ev_lock);
+    expect(badlen == 0, "%s: %d of %d changes reported with a length other than %d", AUTOS[i].name, badlen, n, AUTOS[i].len);
+    expect(same, "%s: the last change reported is the control's value", AUTOS[i].name);
+    usleep(300000);
+    int n2 = count_changes(c, AUTOS[i].sel, NULL);
+    expect(n2 == n, "%s: %d changes reported after it is off", AUTOS[i].name, n2 - n);
+    printf("  %s: %d changes reported\n", AUTOS[i].name, n);
+  }
+  for (int i = 0; i < N_AUTOS; i++)
+    if (unit[i]) soft(uvc_set_ctrl(devh, unit[i], AUTOS[i].auto_sel, &saved[i], 1));
+  uvc_set_status_callback(devh, NULL, NULL);
+  printf("RESULT_EXTRA auto_modes=%d\n", tested);
+  if (!tested) n_soft++; /* no autoupdate control behind an auto mode */
+}
+
 /* ================= negotiate ================= */
 /* A ctrl full of leftovers (0xa5 bytes), as on the caller's stack. libuvc takes the fields it doesn't
  * negotiate from GET_MAX(PROBE), and what it returns from GET_CUR(PROBE). If those fail (libuvc#242), the
@@ -1691,10 +1781,11 @@ static const struct { const char *name; mode_fn fn; int not_in_all; } MODES[] = 
   {"stillbig", mode_stillbig, 1}, /* explicit only: libuvc cuts such stills (libuvc#256) */
   {"rate", mode_rate, 1},         /* explicit only: needs the real-time clock */
   {"leftovers", mode_leftovers, 1}, /* explicit only: negotiate runs it too */
+  {"autoupdate", mode_autoupdate, 1}, /* explicit only: needs a camera whose auto modes move */
 };
 
 static void usage(void) {
-  fprintf(stderr, "usage: api_test [-d VID:PID] [-n INDEX] [-m STATUS_WAIT_MS] [-l] [-s] [-x] MODE...\n  modes: info controls convert poll still multi status async negotiate wrap open absent soak stillbig rate leftovers all\n");
+  fprintf(stderr, "usage: api_test [-d VID:PID] [-n INDEX] [-m STATUS_WAIT_MS] [-l] [-s] [-x] MODE...\n  modes: info controls convert poll still multi status async negotiate wrap open absent soak stillbig rate leftovers autoupdate all\n");
 }
 
 int main(int argc, char **argv) {

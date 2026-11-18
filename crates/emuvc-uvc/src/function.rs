@@ -37,6 +37,8 @@ pub struct UvcFunction {
     pending: Vec<PendingSet>,
     /// VC_VIDEO_POWER_MODE_CONTROL's bDevicePowerMode; `None`: no such control.
     power_mode: Option<u8>,
+    /// Direction of the next automatic step (EventKind::Auto), by (entity, selector).
+    auto_up: BTreeMap<(u8, u8), bool>,
 }
 
 /// Per-control behaviour:
@@ -109,6 +111,10 @@ const DEFAULT_ASYNC_MS: u64 = 20;
 ///
 /// [[device.event]]
 /// kind = { raw = [1, 2] }   # arbitrary (here: truncated) status packet
+///
+/// [[device.event]]
+/// every_ms = 100
+/// kind = "auto"             # the automatic modes that are on move their controls
 /// ```
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -140,6 +146,11 @@ pub enum EventKind {
     },
     /// An arbitrary status interrupt packet (malformed ones included).
     Raw(Vec<u8>),
+    /// One step of every automatic mode that is on (AE, AF, AWB, auto hue, auto contrast): the
+    /// controls it drives that may change on their own (autoupdate, GET_INFO D3) move by their
+    /// resolution, turning back at their limits, and report their new value with a Control Change
+    /// interrupt (UVC 1.5 2.4.2.2). Use with `every_ms`.
+    Auto,
 }
 
 struct ScheduledEvent {
@@ -250,6 +261,7 @@ impl UvcFunction {
             events: Vec::new(),
             async_cfg: BTreeMap::new(),
             pending: Vec::new(),
+            auto_up: BTreeMap::new(),
             power_mode: None,
         };
         f.update_auto_links(false);
@@ -440,6 +452,48 @@ impl UvcFunction {
                     attribute,
                 } => self.push_control_change(entity, selector, attribute, value),
                 EventKind::Raw(p) => self.push_status(p),
+                EventKind::Auto => self.auto_step(),
+            }
+        }
+    }
+
+    /// EventKind::Auto: the controls of the automatic modes that are on take a step.
+    fn auto_step(&mut self) {
+        let mut driven = Vec::new();
+        for e in &self.vc.entities {
+            let Some(unit) = unit_of(&e.kind) else {
+                continue;
+            };
+            for (auto, pred, deps) in control::auto_links(unit) {
+                if self
+                    .controls
+                    .get(&(e.id, *auto))
+                    .is_some_and(|a| pred(a.value()))
+                {
+                    driven.extend(
+                        deps.iter()
+                            .filter(|d| !control::is_relative(unit, **d))
+                            .map(|d| (e.id, *d)),
+                    );
+                }
+            }
+        }
+        for key in driven {
+            let Some(c) = self
+                .controls
+                .get_mut(&key)
+                .filter(|c| c.info & INFO_AUTOUPDATE != 0)
+            else {
+                continue;
+            };
+            let before = c.cur.clone();
+            let Some(up) = c.auto_step(*self.auto_up.get(&key).unwrap_or(&true)) else {
+                continue;
+            };
+            self.auto_up.insert(key, up);
+            if c.cur != before {
+                let v = c.cur.clone();
+                self.push_control_change(key.0, key.1, STATUS_ATTR_VALUE, v);
             }
         }
     }

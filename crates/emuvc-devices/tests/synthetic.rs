@@ -917,3 +917,74 @@ fn xu_config_and_power_mode() {
     }];
     assert!(build(&cfg).is_err());
 }
+
+#[test]
+fn auto_modes_drift() {
+    let mut cfg = synthetic(SyntheticConfig::default());
+    // Every 100 ms: the status endpoint (polled every 16 ms) keeps up with 4 changes per step.
+    cfg.events = vec![EventSpec {
+        at_ms: 100,
+        every_ms: Some(100),
+        count: None,
+        kind: EventKind::Auto,
+    }];
+    let host = host();
+    let dev = host.attach(build(&cfg).unwrap()).unwrap().id;
+    let ct = |req: u8, cs: u8, v: &[u8], len: u16| {
+        let rt = if req == SET_CUR { 0x21 } else { 0xa1 };
+        let setup = SetupPacket::new(rt, req, (cs as u16) << 8, 1 << 8, len);
+        host.control(dev, setup, v, None).unwrap()
+    };
+    let exposure = || {
+        let v = ct(GET_CUR, CT_EXPOSURE_TIME_ABSOLUTE_CONTROL, &[], 4);
+        u32::from_le_bytes(v.try_into().unwrap())
+    };
+    let status = || {
+        let mut u = Urb::interrupt_in(dev, 0x87, 16);
+        u.timeout = Some(std::time::Duration::from_millis(500));
+        host.transfer(u).data
+    };
+    let head = |attr: u8| {
+        [
+            STATUS_ORIGINATOR_VC,
+            1,
+            0,
+            CT_EXPOSURE_TIME_ABSOLUTE_CONTROL,
+            attr,
+        ]
+    };
+    let change = |p: &[u8]| {
+        (p.len() == 9 && p[..5] == head(STATUS_ATTR_VALUE))
+            .then(|| u32::from_le_bytes(p[5..9].try_into().unwrap()))
+    };
+    // Aperture priority, the default AE mode: the exposure time moves by its GET_RES (1) at every
+    // step, and reports it (autoupdate). Auto focus and auto white balance move theirs meanwhile.
+    let start = exposure();
+    let seen: Vec<u32> = (0..12).filter_map(|_| change(&status())).collect();
+    assert!(seen.len() >= 3, "{seen:?}");
+    assert!(
+        seen[0] == start || seen[0] == start + 1,
+        "{seen:?} from {start}"
+    );
+    assert!(seen.windows(2).all(|w| w[1] == w[0] + 1), "{seen:?}");
+    // Manual: the changes queued before, up to the exposure time's info change (no longer
+    // disabled), then none. The last one reported is the value.
+    ct(SET_CUR, CT_AE_MODE_CONTROL, &[1], 1);
+    let mut last = *seen.last().unwrap();
+    let mut enabled = false;
+    for _ in 0..20 {
+        let p = status();
+        if let Some(v) = change(&p) {
+            last = v;
+        } else if p.len() == 6 && p[..5] == head(STATUS_ATTR_INFO) {
+            enabled = p[5] & INFO_DISABLED == 0;
+            break;
+        }
+    }
+    assert!(enabled);
+    assert_eq!(exposure(), last);
+    for _ in 0..12 {
+        assert_eq!(change(&status()), None);
+    }
+    assert_eq!(exposure(), last);
+}

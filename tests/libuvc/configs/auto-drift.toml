@@ -1,0 +1,10 @@
+# The synthetic camera's automatic modes move the controls they drive every 100 ms (`kind = "auto"`), and
+# report each change with a Control Change interrupt (autoupdate, GET_INFO D3): the exposure time under AE
+# (aperture priority by default), focus under auto focus, white balance (temperature and components) under
+# auto white balance, hue under auto hue.
+[[device]]
+model = "synthetic"
+[[device.event]]
+at_ms = 100
+every_ms = 100
+kind = "auto"

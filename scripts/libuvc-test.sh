@@ -219,6 +219,10 @@ done
 CHECK_RE='^RESULT mode=info ' run_api api-info-two-devices EMUVC_DEVICE=luxvisions-30c9-0052,luxvisions-30c9-0052 -- info
 CHECK_RE='^RESULT mode=wrap ' run_api api-c930e $C930E $V -- -m 1500 all
 CHECK_RE='^RESULT mode=poll ' run_api api-poll-virtual-clock $D $V -- poll
+# Automatic modes (AE, AF, AWB, auto hue) that move their controls every 100 ms (auto-drift.toml), each change
+# reported with a Control Change interrupt (autoupdate): libuvc must hand them all to the status callback,
+# with the control's value, and none once the mode is off.
+CHECK_RE='^RESULT mode=autoupdate ' run_api api-autoupdate EMUVC_CONFIG="$CFG/auto-drift.toml" -- autoupdate
 # libuvc #267: polling uvc_stream_get_frame() at 260 fps, in real time, must not time out.
 CHECK_RE='^RESULT mode=poll ' run_api api-issue-267-elp-260fps EMUVC_CONFIG="$CFG/issue-267-elp-260fps.toml" -- poll
 CHECK_RE='^RESULT mode=poll ' run_api api-poll-no-eof EMUVC_CONFIG="$CFG/no-eof.toml" -- poll
