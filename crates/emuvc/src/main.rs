@@ -5,7 +5,12 @@
 //! - `emuvc selftest [MODEL]` — stream every format/frame in-process and check frames.
 //! - `emuvc usbip [--listen ADDR] [-d MODEL].. [-c CONFIG]` — export devices over USB/IP.
 //! - `emuvc usbip-attach [--server ADDR] BUSID` — attach an exported device to vhci-hcd (root).
+//! - `emuvc check-frames -f FMT -s WxH FILE` — check the stamps of captured frames.
+//! - `emuvc check-meta [--metadata-every N] [--clock-hz HZ] FILE` — check a capture from uvcvideo's
+//!   metadata node (`V4L2_META_FMT_D4XX`: whole payload headers).
 //! - `emuvc run [-d MODEL].. [-c CONFIG] -- CMD..` — run a program with the libusb shim preloaded.
+
+mod meta;
 
 use std::os::unix::process::CommandExt;
 use std::path::PathBuf;
@@ -96,6 +101,18 @@ enum Cmd {
         size: String,
         file: PathBuf,
     },
+    /// Check what uvcvideo's metadata node captured (`v4l2-ctl --stream-to=FILE` on it) from an
+    /// emulated camera whose metadata format copies whole payload headers (V4L2_META_FMT_D4XX): every
+    /// frame carries its own index as metadata, or none.
+    CheckMeta {
+        /// Frames whose index is N - 1 modulo N carry no metadata (`no_metadata_every`), the others do.
+        #[arg(long)]
+        metadata_every: Option<u32>,
+        /// The camera's dwClockFrequency: check the SCR's clock against its SOF counter.
+        #[arg(long)]
+        clock_hz: Option<u32>,
+        file: PathBuf,
+    },
     /// Run a program against emulated devices (LD_PRELOADs the libusb shim).
     Run {
         /// Device model (repeat for several; `generic:FILE` for a dump).
@@ -137,6 +154,11 @@ fn main() -> ExitCode {
             .map(|port| println!("attached {busid} to vhci port {port}"))
             .map_err(|e| format!("attach {busid}: {e}")),
         Cmd::CheckFrames { format, size, file } => check_frames(&format, &size, &file),
+        Cmd::CheckMeta {
+            metadata_every,
+            clock_hz,
+            file,
+        } => check_meta(metadata_every, clock_hz, &file),
         Cmd::Run {
             device,
             config,
@@ -478,6 +500,32 @@ fn check_frames(format: &str, size: &str, file: &std::path::Path) -> Result<(), 
     );
     if n == 0 || bad > 0 || data.len() % frame_len != 0 {
         Err("frame check failed".into())
+    } else {
+        Ok(())
+    }
+}
+
+fn check_meta(
+    metadata_every: Option<u32>,
+    clock_hz: Option<u32>,
+    file: &std::path::Path,
+) -> Result<(), String> {
+    let data = std::fs::read(file).map_err(|e| format!("{}: {e}", file.display()))?;
+    let blocks = meta::parse(&data)?;
+    let r = meta::check(&blocks, metadata_every, clock_hz);
+    for e in &r.errors {
+        println!("  {e}");
+    }
+    println!(
+        "RESULT blocks={} frames={} with_metadata={} without_metadata={} errors={}",
+        r.blocks,
+        r.frames,
+        r.with_metadata,
+        r.without_metadata,
+        r.errors.len()
+    );
+    if r.frames == 0 || !r.errors.is_empty() {
+        Err("metadata check failed".into())
     } else {
         Ok(())
     }

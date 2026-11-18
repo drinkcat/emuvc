@@ -271,6 +271,35 @@ fi
 grep -E "start streaming|stop streaming" /tmp/usbip-synthetic-uvc11-2streams.log | tail -n 4
 unserve
 
+# uvcvideo's metadata node. With an Intel D435's IDs (metadata-d4xx.toml), uvcvideo copies each payload's
+# whole header there (V4L2_META_FMT_D4XX): PTS, SCR, and the metadata after them, which emuvc starts with the
+# frame index, here in even frames only (header-metadata-every-other's header). Every frame must carry its own
+# index or none, as sent, and the SCR's clock must agree with its SOF counter. libuvc reports the previous
+# frame's metadata for the frames without (header-metadata-every-other, a known libuvc bug).
+step "uvcvideo: metadata node (D4XX)"
+serve metadata-d4xx Synthetic
+meta=
+for n in $(ls /sys/class/video4linux | sort -V); do
+  echo "$before" | grep -qx "$n" && continue
+  v4l2-ctl -d "/dev/$n" -D 2>/dev/null | sed -n '/Device Caps/,$p' | grep -q "Metadata Capture" && meta=/dev/$n
+done
+check test -n "$meta"
+if [ -n "$meta" ] && [ -n "$dev" ]; then
+  # UVCH (PTS and SCR only) by default; the device's own format second.
+  v4l2-ctl -d "$meta" --list-formats-meta | grep "\["
+  v4l2-ctl -d "$meta" --set-fmt-meta=D4XX
+  check sh -c "v4l2-ctl -d $meta --get-fmt-meta | grep -q D4XX"
+  # The metadata node only fills while the video node streams.
+  timeout 30 v4l2-ctl -d "$meta" --stream-mmap --stream-count=20 --stream-to=/tmp/meta.bin >/dev/null 2>&1 &
+  metap=$!
+  sleep 0.5
+  check timeout 30 v4l2-ctl -d "$dev" --set-fmt-video=width=640,height=480,pixelformat=YUYV --stream-mmap=4 \
+    --stream-count=40 --stream-to=/tmp/meta-video.yuyv
+  check wait "$metap"
+  check "$EMUVC" check-meta --metadata-every 2 --clock-hz 48000000 /tmp/meta.bin
+fi
+unserve
+
 disconnects() { dmesg | grep -c "USB disconnect"; }
 step "uvcvideo: unplugged while streaming"
 unplugs=$(disconnects)
