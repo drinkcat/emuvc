@@ -248,6 +248,34 @@ impl Control {
         Ok(())
     }
 
+    /// One step of the automatic mode driving this control (AE, AF, AWB...): each field moves by its
+    /// resolution, `up` or down, turning back where the first one would leave its range. Returns the
+    /// direction of the next step; `None` for a control without integer fields.
+    pub fn auto_step(&mut self, up: bool) -> Option<bool> {
+        let Validation::Fields(fs) = &self.validation else {
+            return None;
+        };
+        let first = fs.first()?;
+        let mut up = up;
+        let (v, step) = (get(&self.cur, first.size, first.signed), first.res.max(1));
+        if (up && v + step > first.max) || (!up && v - step < first.min) {
+            up = !up;
+        }
+        let (mut cur, mut off) = (Vec::with_capacity(self.cur.len()), 0);
+        for f in fs {
+            let v = get(&self.cur[off..], f.size, f.signed);
+            let step = f.res.max(1);
+            put(
+                &mut cur,
+                f.size,
+                if up { v + step } else { v - step }.clamp(f.min, f.max),
+            );
+            off += f.size as usize;
+        }
+        self.cur = cur;
+        Some(up)
+    }
+
     /// Back to the default value (bus reset).
     pub fn reset(&mut self) {
         if let Some(d) = &self.def {
@@ -418,6 +446,20 @@ pub fn region_of_interest(width: u16, height: u16) -> Control {
 pub type AutoLink = (u8, fn(u64) -> bool, &'static [u8]);
 
 /// "Auto" controls and the controls they disable (same entity).
+/// Relative controls are commands (move this way, at this speed), not values an automatic mode changes.
+pub fn is_relative(unit: Unit, selector: u8) -> bool {
+    unit == Unit::Camera
+        && matches!(
+            selector,
+            CT_EXPOSURE_TIME_RELATIVE_CONTROL
+                | CT_FOCUS_RELATIVE_CONTROL
+                | CT_IRIS_RELATIVE_CONTROL
+                | CT_ZOOM_RELATIVE_CONTROL
+                | CT_PANTILT_RELATIVE_CONTROL
+                | CT_ROLL_RELATIVE_CONTROL
+        )
+}
+
 pub fn auto_links(unit: Unit) -> &'static [AutoLink] {
     fn on(v: u64) -> bool {
         v != 0
@@ -470,6 +512,23 @@ pub fn auto_links(unit: Unit) -> &'static [AutoLink] {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn auto_step_turns_back() {
+        let mut c = Control::int(2, false, 0, 10, 5, 5);
+        let steps: Vec<_> = (0..5)
+            .scan(true, |up, _| {
+                *up = c.auto_step(*up).unwrap();
+                Some(c.value())
+            })
+            .collect();
+        assert_eq!(steps, [10, 5, 0, 5, 10]);
+        // Two fields move together (white balance components).
+        let mut wb = standard(Unit::Processing, PU_WHITE_BALANCE_COMPONENT_CONTROL).unwrap();
+        assert_eq!(wb.auto_step(false), Some(false));
+        assert_eq!(wb.cur, [127, 0, 127, 0]);
+        assert_eq!(Control::one_bit_of(1, 0x09, 0x08).auto_step(true), None);
+    }
 
     #[test]
     fn int_control() {
