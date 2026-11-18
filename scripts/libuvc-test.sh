@@ -87,7 +87,7 @@ TMP="$(mktemp)"; trap 'rm -f "$TMP"' EXIT
 
 # run_case NAME EXPECT [VAR=val ...] -- stream_test args...
 #   EXPECT: pass   must exit 0 (EXPECT_RC=N: exit N, an expected, checked failure) and print a line
-#                  matching CHECK_RE (grep -E on the output) if set.
+#                  matching CHECK_RE (grep -E on the output) if set, and none matching CHECK_NOT_RE.
 #           robust a misbehaving device or an injected fault: failing cleanly (exit 1) is as good as
 #                  working. Crashes, hangs, sanitizer reports and setup errors fail. CHECK_RE applies.
 #           bug    a known libuvc bug, BUG="reference: what is wrong". The case checks the correct
@@ -108,6 +108,7 @@ run_case() {
   local secs=$((SECONDS - t0)) rc_ok=0 re_ok=1 clean=0 verdict=FAIL
   [ $rc -eq "${EXPECT_RC:-0}" ] && rc_ok=1
   if [ -n "${CHECK_RE:-}" ] && ! grep -Eq "$CHECK_RE" "$TMP"; then re_ok=0; echo "(missing output /$CHECK_RE/)" >>"$TMP"; fi
+  if [ -n "${CHECK_NOT_RE:-}" ] && grep -Eq "$CHECK_NOT_RE" "$TMP"; then re_ok=0; echo "(unexpected output /$CHECK_NOT_RE/)" >>"$TMP"; fi
   case $rc in 0|1) clean=1 ;; esac
   case $expect in
     pass) [ $rc_ok$re_ok = 11 ] && verdict=PASS ;;
@@ -135,9 +136,9 @@ run_case() {
   if [ $VERBOSE = 1 ]; then sed 's/^/    | /' "$TMP"
   elif [ $verdict = FAIL ]; then tail -15 "$TMP" | sed 's/^/    | /'
   elif [ $verdict = XFAIL ]; then { grep -E '^ *FAIL|^uvc_' "$TMP" || true; } | head -3 | sed 's/^/    | /'; fi
-  CHECK_RE=""; EXPECT_RC=""; BUG=""; BUG_CRASH=""; return 0
+  CHECK_RE=""; CHECK_NOT_RE=""; EXPECT_RC=""; BUG=""; BUG_CRASH=""; return 0
 }
-CHECK_RE=""; EXPECT_RC=""; BUG=""; BUG_CRASH=""
+CHECK_RE=""; CHECK_NOT_RE=""; EXPECT_RC=""; BUG=""; BUG_CRASH=""
 
 D=EMUVC_DEVICE=luxvisions-30c9-0052
 V=EMUVC_CLOCK=virtual
@@ -341,6 +342,12 @@ TEST_BIN=api_test run_case api-exit-open pass EMUVC_CONFIG="$CFG/synthetic-defau
 # must start (api_test poll reopens the stream).
 BUG="libuvc#257: libuvc never stops a bulk stream with CLEAR_FEATURE(ENDPOINT_HALT), as uvcvideo and Windows do, so such a camera keeps streaming and refuses the next commit" \
   CHECK_RE='^RESULT mode=poll ' TEST_BIN=api_test run_case api-bulk-stop-clear-halt bug EMUVC_CONFIG="$CFG/bulk-stop-clear-halt.toml" $V -- poll
+
+# uvc_close() with the status transfer submitted (libuvc PR #335): releasing the VideoControl interface
+# kills it (usbfs), libusb reports it as completed, and the callback must not resubmit it to an interface
+# the handle no longer holds (the shim reports such transfers as "libusb misuse").
+BUG="libuvc PR #335: uvc_close() releases the VideoControl interface with the status transfer submitted, and its callback resubmits the killed transfer" \
+  CHECK_RE='^RESULT mode=open ' CHECK_NOT_RE='libusb misuse' TEST_BIN=api_test run_case api-close-status-transfer bug EMUVC_CONFIG="$CFG/synthetic-default.toml" $V -- open
 
 # Interrupt transfers that time out: the host keeps polling and the events that follow arrive.
 CHECK_RE='button_events=2 value=1 ' run_api api-status-timeout EMUVC_CONFIG="$CFG/status-timeout.toml" -- -m 1000 status

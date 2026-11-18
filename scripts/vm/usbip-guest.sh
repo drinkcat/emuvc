@@ -39,6 +39,23 @@ check "$STREAM_TEST" -f yuyv -s 640x480 -r 30 -n 30 -t 20 --max-gaps 2
 check "$STREAM_TEST" -f mjpeg -s 1280x720 -r 30 -n 30 -t 20 --max-gaps 2
 check "$STREAM_TEST" --controls
 
+# uvc_close() with the status transfer submitted (libuvc PR #335). Releasing the VideoControl interface kills
+# the transfer (usbfs), libusb reports it completed, and libuvc's callback submits it again, to an interface
+# it no longer holds: usbfs claims it implicitly, warning "did not claim interface 0 before use" (or fails
+# with EBUSY if uvcvideo has it back). The libusb shim reports that as "libusb misuse". The kernel and the
+# shim must agree on the same libuvc's close, whether libuvc still does it or not.
+step "libuvc PR #335: the kernel and the libusb shim agree on uvc_close()"
+claims() { dmesg | grep -c "did not claim interface"; }
+claims0=$(claims)
+check "$STREAM_TEST" -d 30c9:0052 -f yuyv -s 640x480 -r 30 -n 5 -t 20
+kernel=$(( $(claims) > claims0 ))
+dmesg | grep "did not claim interface" | tail -n 1
+shim=$(LD_PRELOAD="$ROOT/target/debug/libemuvc_libusb.so" EMUVC_DEVICE=luxvisions-30c9-0052 EMUVC_CLOCK=virtual \
+  "$STREAM_TEST" -d 30c9:0052 -f yuyv -s 640x480 -r 30 -n 5 -t 20 2>&1 | grep -c "libusb misuse")
+[ "$shim" -gt 0 ] && shim=1
+echo "  the kernel saw libuvc resubmit: $kernel, the shim: $shim"
+check test "$kernel" = "$shim"
+
 # serve CONFIG|SPEC PATTERN: serves a configuration (tests/libuvc/configs/CONFIG.toml) or a device (a model,
 # lsusb:DUMP...) on the next port and attaches it; $dev is its first new video device whose name matches
 # PATTERN (the capture one: metadata devices come after it), $srv the server's PID (killing it detaches the

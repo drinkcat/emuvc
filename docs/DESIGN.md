@@ -130,9 +130,14 @@ Config comes from the environment (`EMUVC_DEVICE`, `EMUVC_CONFIG`,
   `extra` placement), from the descriptors the engine read at enumeration;
 - event handling follows libusb's event-lock protocol, sync transfers are
   async + `handle_events` like in libusb (callbacks may run inside
-  `libusb_control_transfer`), `libusb_close` discards in-flight transfers;
+  `libusb_control_transfer`), `libusb_close` takes the event lock like libusb (no
+  callback runs while the handle goes away) and discards in-flight transfers;
 - a kernel driver (uvcvideo) is emulated as bound to video interfaces, so
   detach/attach paths run (`kernel_driver = false` to disable).
+- usbfs semantics: releasing an interface kills its transfers, which complete as
+  COMPLETED with no data (as libusb reports URBs killed under it); a transfer on an
+  interface the handle hasn't claimed claims it implicitly, or fails with BUSY if the
+  kernel driver has it, and is reported on stderr as "libusb misuse".
 Not supported: hotplug callbacks, pollfd integration (empty list; timeouts
 are enforced by the engine), `libusb_wrap_sys_device`, root hubs
 (`libusb_get_parent` is NULL), bulk streams. `libusb_set_option` is variadic
