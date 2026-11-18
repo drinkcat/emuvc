@@ -1363,6 +1363,39 @@ static void mode_async(void) {
 }
 
 /* ================= negotiate ================= */
+/* A ctrl full of leftovers (0xa5 bytes), as on the caller's stack. libuvc takes the fields it doesn't
+ * negotiate from GET_MAX(PROBE), and what it returns from GET_CUR(PROBE). If those fail (libuvc#242), the
+ * leftovers must neither reach the device in SET_CUR(PROBE) (the emulated camera, like many, echoes
+ * wKeyFrameRate, wPFrameRate, wCompQuality and wCompWindowSize) nor come back as negotiated. */
+static void check_leftovers(const uvc_format_desc_t *f, const uvc_frame_desc_t *fr) {
+  if (fmt_of(f) == UVC_FRAME_FORMAT_UNKNOWN) return;
+  uvc_stream_ctrl_t pc;
+  memset(&pc, 0xa5, sizeof pc);
+  if (soft(uvc_get_stream_ctrl_format_size(devh, &pc, fmt_of(f), fr->wWidth, fr->wHeight, 0)) != UVC_SUCCESS) return;
+  expect(pc.dwMaxVideoFrameSize != 0xa5a5a5a5 && pc.dwMaxPayloadTransferSize != 0xa5a5a5a5,
+         "%ux%u negotiated with the caller's leftovers: dwMaxVideoFrameSize 0x%x, dwMaxPayloadTransferSize 0x%x",
+         fr->wWidth, fr->wHeight, pc.dwMaxVideoFrameSize, pc.dwMaxPayloadTransferSize);
+  uvc_stream_ctrl_t back = {0};
+  back.bInterfaceNumber = pc.bInterfaceNumber;
+  if (soft(uvc_query_stream_ctrl(devh, &back, 1, UVC_GET_CUR)) == UVC_SUCCESS)
+    expect(back.wKeyFrameRate != 0xa5a5 && back.wPFrameRate != 0xa5a5 && back.wCompQuality != 0xa5a5 &&
+               back.wCompWindowSize != 0xa5a5,
+           "%ux%u: SET_CUR(PROBE) sent the caller's leftovers (echoed: wKeyFrameRate 0x%x, wPFrameRate 0x%x, "
+           "wCompQuality 0x%x, wCompWindowSize 0x%x)",
+           fr->wWidth, fr->wHeight, back.wKeyFrameRate, back.wPFrameRate, back.wCompQuality, back.wCompWindowSize);
+}
+
+/* Only check_leftovers(), on the first format's smallest frame: for devices that fail probe requests, whose
+ * other negotiate checks would fail too. */
+static void mode_leftovers(void) {
+  expect(open_device() == 0, "open device");
+  if (!devh) return;
+  const uvc_format_desc_t *f = uvc_get_format_descs(devh);
+  const uvc_frame_desc_t *fr = f ? smallest_frame(f) : NULL;
+  if (!fr) { expect(0, "no format"); return; }
+  check_leftovers(f, fr);
+}
+
 static void mode_negotiate(void) {
   expect(open_device() == 0, "open device");
   if (!devh) return;
@@ -1488,6 +1521,7 @@ static void mode_negotiate(void) {
       expect(uvc_stream_start(s, NULL, NULL, 0) != UVC_SUCCESS, "start with unknown frame index rejected");
       uvc_stream_close(s);
     } else n_soft++;
+    check_leftovers(f, fr);
     uvc_print_stream_ctrl(&c, NULL);
     /* commit + stream with the negotiated one */
     expect(uvc_stream_open_ctrl(devh, &s, &c) == UVC_SUCCESS, "open negotiated");
@@ -1656,10 +1690,11 @@ static const struct { const char *name; mode_fn fn; int not_in_all; } MODES[] = 
   {"soak", mode_soak, 1},     /* explicit only: long */
   {"stillbig", mode_stillbig, 1}, /* explicit only: libuvc cuts such stills (libuvc#256) */
   {"rate", mode_rate, 1},         /* explicit only: needs the real-time clock */
+  {"leftovers", mode_leftovers, 1}, /* explicit only: negotiate runs it too */
 };
 
 static void usage(void) {
-  fprintf(stderr, "usage: api_test [-d VID:PID] [-n INDEX] [-m STATUS_WAIT_MS] [-l] [-s] [-x] MODE...\n  modes: info controls convert poll still multi status async negotiate wrap open absent soak stillbig rate all\n");
+  fprintf(stderr, "usage: api_test [-d VID:PID] [-n INDEX] [-m STATUS_WAIT_MS] [-l] [-s] [-x] MODE...\n  modes: info controls convert poll still multi status async negotiate wrap open absent soak stillbig rate leftovers all\n");
 }
 
 int main(int argc, char **argv) {

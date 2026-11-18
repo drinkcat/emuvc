@@ -1,0 +1,11 @@
+# Every request of the probe control fails, as when the streaming interface is busy (another process holds
+# it): uvc_get_stream_ctrl_format_size() ignores its failed claim, and usbfs then fails every request to the
+# interface ("submiturb failed, errno=16"). Here they stall.
+[[device]]
+model = "synthetic"
+[[device.fault]]
+on = { control = { request_type = 0x21, selector = 1, interface = 1 } }
+action = "stall"
+[[device.fault]]
+on = { control = { request_type = 0xa1, selector = 1, interface = 1 } }
+action = "stall"

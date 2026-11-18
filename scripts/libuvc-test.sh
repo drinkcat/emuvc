@@ -402,6 +402,15 @@ run_api_robust() { # NAME [VAR=val ...]
 for c in issue-1-probe-stall issue-strict-probe-len issue-garbage-first-frames; do
   run_api_robust "api-$c" EMUVC_CONFIG="$CFG/$c.toml" $V
 done
+# A ctrl full of leftovers, as on the caller's stack (api_test leftovers, also part of negotiate): libuvc takes
+# the fields it doesn't negotiate from GET_MAX(PROBE), what it returns from GET_CUR(PROBE), and goes on when
+# they fail. GET_MAX stalls: SET_CUR(PROBE) carries the leftovers, which the emulated camera echoes. Every
+# probe request fails (a busy streaming interface, whose failed claim libuvc ignores too): libuvc succeeds,
+# with the leftovers as dwMaxVideoFrameSize and dwMaxPayloadTransferSize.
+BUG="libuvc#242: when GET_MAX(PROBE) fails, uvc_get_stream_ctrl_format_size() goes on, and SET_CUR(PROBE) sends the caller's uninitialised ctrl fields (wKeyFrameRate, wCompQuality, ...)" \
+  CHECK_RE='^RESULT mode=leftovers ' TEST_BIN=api_test run_case api-probe-get-max-stall bug EMUVC_CONFIG="$CFG/probe-get-max-stall.toml" -- leftovers
+BUG="when every probe request fails (a busy streaming interface, whose failed claim it ignores too), uvc_get_stream_ctrl_format_size() succeeds, with the caller's uninitialised dwMaxVideoFrameSize and dwMaxPayloadTransferSize" \
+  CHECK_RE='^RESULT mode=leftovers ' TEST_BIN=api_test run_case api-probe-all-stall bug EMUVC_CONFIG="$CFG/probe-all-stall.toml" -- leftovers
 # missing descriptors (libuvc#172, #195, #300, #71): no input header in the streaming interface, a VC
 # header that lists no streaming interface
 for c in desc-no-input-header desc-vc-no-streaming; do
