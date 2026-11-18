@@ -160,6 +160,27 @@ camera logitech_hd_pro_920 C920 046d:082d 30
 camera ms_lifecam_show LifeCam 045e:0729 14
 camera quickcampro9000 046d:0809 046d:0809 30
 
+# usbfs's memory limit, down to 1 MiB (16 by default), as the libusb shim emulates it (libuvc suite:
+# usbfs-memory-1mb): 10 of libuvc's isochronous transfers of 96 KiB fit, the 11th fails with ENOMEM
+# ("submiturb failed, errno=12"), and libuvc streams on the 10. The kernel must agree: libusb's debug log has
+# every submit and completion, so the transfers in flight when the kernel refused one are known.
+step "usbfs memory limit (libuvc: usbfs-memory-1mb)"
+serve usbfs-memory-1mb Synthetic
+lim=/sys/module/usbcore/parameters/usbfs_memory_mb
+old=$(cat $lim)
+echo 1 >$lim
+LIBUSB_DEBUG=4 timeout 40 "$STREAM_TEST" -d 1209:0001 -f yuyv -s 640x480 -r 30 -n 60 -t 20 >/tmp/usbfs.log 2>&1
+rc=$?
+echo "$old" >$lim
+grep -E "^RESULT|errno=12" /tmp/usbfs.log | head -n 3
+check [ "$rc" = 0 ]
+sed -n '1,/submiturb failed, errno=12/p' /tmp/usbfs.log >/tmp/usbfs-upto.log
+sub=$(grep -c "need 1 urbs for new transfer with length 98304" /tmp/usbfs-upto.log)
+done_=$(grep -c "handling completion status .* of iso urb" /tmp/usbfs-upto.log)
+echo "isochronous transfers in flight when the kernel refused one: $((sub - 1 - done_))"
+check [ "$((sub - 1 - done_))" = 10 ]
+unserve
+
 # uvcvideo as the reference for the libuvc cases that say it copes (tests/libuvc/configs).
 step "Luxvisions IR function (libuvc: api-second-function)"
 # uvcvideo binds both functions: video devices hang off the IR function's VideoControl interface (2).

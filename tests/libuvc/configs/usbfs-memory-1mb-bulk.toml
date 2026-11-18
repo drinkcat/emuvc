@@ -1,0 +1,8 @@
+# usbfs's memory limit down to 1 MiB, on a bulk camera: libuvc's bulk transfers are 32 KiB here, so 31 of its
+# 100 fit, next to its status endpoint's transfer. libusb reports ENOMEM as LIBUSB_ERROR_NO_MEM for bulk
+# transfers (LIBUSB_ERROR_IO for isochronous ones).
+usbfs_memory_mb = 1
+
+[[device]]
+model = "synthetic"
+synthetic = { transfer = "bulk", formats = ["yuyv"], sizes = [[640, 480]], fps = [30] }

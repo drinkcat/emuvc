@@ -51,6 +51,9 @@ Runs libuvc (built out of tree, never modified) against the emuvc libusb shim
   compression patterns, a vendor descriptor among the VC ones, bcdUVC 0x010a), or are known bugs
   (`desc-composite-input`, `desc-bcduvc-0101`: valid descriptors libuvc rejects;
   `desc-cs-after-endpoint`: VS descriptors after the bulk endpoint, which uvcvideo finds).
+  `usbfs-*.toml` lower usbfs's memory limit in the shim (`usbfs_memory_mb`, 16 MiB by default as on
+  Linux), or refuse large URBs as some Android kernels do (`usbfs_max_urb_bytes`): a submit past either
+  fails with ENOMEM, as an I/O error for isochronous transfers (libusb's "submiturb failed, errno=12").
   `pts-first-only.toml` and `clock-wrap-jitter.toml` exercise payload header timestamps
   (`uvc.clock`). The first shortens the header after a frame's first payload. The second makes the
   PTS/SCR clock wrap, drift, jitter and step back. libuvc parses PTS/SCR without using them, and

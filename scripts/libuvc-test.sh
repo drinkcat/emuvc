@@ -193,6 +193,20 @@ run_case isight pass EMUVC_CONFIG="$CFG/isight.toml" -- -f yuyv -s 640x480 -r 30
 # libuvc #270: SuperSpeed isochronous alternate settings carry bursts (wBytesPerInterval above 1024):
 # libuvc must size them from the endpoint companion descriptor and pick the 4096-byte one.
 CHECK_RE='start streaming .* 4096 bytes/payload' run_case ss-burst pass EMUVC_CONFIG="$CFG/synthetic-iso-ss.toml" -- -f yuyv -s 640x480 -r 30 -n 30 -t 15
+# usbfs's memory limit (the shim's usbfs_memory_mb, 16 MiB by default as on Linux): a submit past it fails with
+# ENOMEM. libuvc submits 100 transfers per stream, and when one fails, it streams on the ones before. Down to
+# 1 MiB, as when other usbfs users hold the rest (libuvc#204): 10 of its isochronous transfers fit (I/O
+# error for the 11th), 31 of its bulk ones (NO_MEM). Every frame must arrive.
+USBFS_LOG=EMUVC_LOG=emuvc_libusb=warn,emuvc_uvc::stream=info
+CHECK_RE='usbfs: 98304-byte URB refused' run_case usbfs-memory-1mb pass $USBFS_LOG EMUVC_CONFIG="$CFG/usbfs-memory-1mb.toml" -- \
+  -f yuyv -s 640x480 -r 30 -n 60 -t 15
+CHECK_RE='usbfs: 32768-byte URB refused' run_case usbfs-memory-1mb-bulk pass $USBFS_LOG EMUVC_CONFIG="$CFG/usbfs-memory-1mb-bulk.toml" -- \
+  -f yuyv -s 640x480 -r 30 -n 60 -t 15
+# Some Android kernels refuse every URB past a size (libuvc#326, #299: "submiturb failed, errno=12"), here
+# libuvc's 96 KiB isochronous transfers. No transfer can be submitted: uvc_start_streaming() must fail, with
+# the I/O error libusb reports (LIBUVC_PACKETS_PER_TRANSFER_MAX, libuvc#327, is the build-time workaround).
+EXPECT_RC=1 CHECK_RE='^uvc_start_streaming: I/O error' run_case usbfs-urb-limit pass EMUVC_CONFIG="$CFG/usbfs-urb-limit.toml" -- \
+  -f yuyv -s 640x480 -r 30 -n 30 -t 10
 # GET_DEF(brightness) stalls: libuvc must report PIPE for it (a failed check, so stream_test exits 1).
 EXPECT_RC=1 CHECK_RE='FAIL brightness GET_DEF = .*\(Pipe\)' run_case stall-get-def pass EMUVC_CONFIG="$CFG/stall-get-def.toml" -- --controls
 

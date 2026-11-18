@@ -1,0 +1,8 @@
+# usbfs's memory limit down to 1 MiB (libusb shim; 16 MiB by default, as on Linux), as when other usbfs
+# users hold the rest (libuvc#204). At 640x480 YUYV 30 fps, libuvc's isochronous transfers are 32 packets
+# of 3072 bytes: 10 of its 100 fit.
+usbfs_memory_mb = 1
+
+[[device]]
+model = "synthetic"
+synthetic = { formats = ["yuyv"], sizes = [[640, 480]], fps = [30] }
