@@ -1141,7 +1141,13 @@ static void mode_still(void) {
       if (soft(uvc_stream_open_ctrl(devh, &s, &c)) >= 0) {
         if (soft(uvc_stream_start(s, NULL, NULL, 0)) >= 0) {
           sc.bInterfaceNumber = c.bInterfaceNumber;
-          expect(uvc_trigger_still(devh, &sc) == UVC_ERROR_NOT_SUPPORTED, "trigger with a running stream rejected");
+          /* libuvc goes by bStillCaptureMethod: an interface claiming method 2 without a still frame
+             descriptor (the libuvc#302 gadget) gets its trigger sent */
+          const uvc_streaming_interface_t *si = devh->info->stream_ifs;
+          while (si && si->bInterfaceNumber != c.bInterfaceNumber) si = si->next;
+          uvc_error_t te = uvc_trigger_still(devh, &sc);
+          if (si && si->bStillCaptureMethod == 2) soft(te);
+          else expect(te == UVC_ERROR_NOT_SUPPORTED, "trigger with a running stream rejected");
           uvc_stream_stop(s);
         }
         uvc_stream_close(s);

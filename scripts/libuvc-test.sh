@@ -461,6 +461,14 @@ C930E15=EMUVC_DEVICE=logitech-046d-0843-uvc15
 run_case c930e-uvc15-yuyv pass $C930E15 -- -f yuyv -s 640x480 -r 30 -n 30 -t 15
 CHECK_RE='^RESULT mode=wrap ' run_api api-c930e-uvc15 $C930E15 $V -- -m 1500 all
 
+# libuvc#302: a "1081" stereo camera from the issue's lsusb -v, a Linux USB gadget with one UVC function
+# per sensor (VC 0 + VS 1, VC 2 + VS 3), and still method 2 without a still frame descriptor. The first
+# camera must work. The second is out of reach (libuvc only uses the first video function): that is the
+# api-second-function known bug, and why a second uvc_open (one process per camera, as in the issue)
+# fails with BUSY.
+I302=EMUVC_DEVICE=lsusb:$ROOT/tests/fixtures/lsusb/issues/302-0001_c002.txt
+CHECK_RE='^RESULT mode=wrap ' run_api api-issue-302 $I302 $V -- -m 1500 all
+
 # Shim-level libusb failures (EMUVC_LIBUSB_FAIL): libuvc's error paths must neither crash nor hang.
 # FAULT[:mode] ; default mode is every mode in one process (lenient).
 # submit_transfer_iso counts stream transfers only: the first of a stream (none submitted: the start fails),

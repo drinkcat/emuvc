@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use emuvc_devices::lsusb::{parse, parse_file};
+use emuvc_devices::lsusb::{parse, parse_file, select};
 use emuvc_devices::{DeviceConfig, build};
 use emuvc_usb::Speed;
 use emuvc_usb::desc::ConfigView;
@@ -118,6 +118,18 @@ fn issue_dumps_parse_and_build() {
         u16::from_le_bytes([d.descriptors.configs[0][2], d.descriptors.configs[0][3]]),
         897
     );
+    // libuvc#302: two UVC functions in one device (VC 0 + VS 1, VC 2 + VS 3), the root hubs around it.
+    let p = fixtures().join("lsusb/issues/302-0001_c002.txt");
+    let cfg = DeviceConfig {
+        descriptors: Some(p.clone()),
+        ..DeviceConfig::model("lsusb")
+    };
+    build(&cfg).unwrap();
+    let devices = parse_file(&p).unwrap();
+    let d = select(&devices, None).unwrap();
+    let view = ConfigView::parse(&d.descriptors.configs[0]).unwrap();
+    assert_eq!(find_video_control_interfaces(&view), vec![0, 2]);
+    assert_eq!(d.descriptors.configs[0].len(), 0x0614);
 }
 
 #[test]
